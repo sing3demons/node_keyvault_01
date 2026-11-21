@@ -4,14 +4,14 @@ import { Hono } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { config } from "./config.js";
 import { KeyVaultService } from "./keyvault/service.js";
-import { KeyVaultHandler } from "./keyvault/handle.js";
+import { KeyVaultController } from "./keyvault/controller.js";
 import { AzureKeyVaultSecretStore } from "./keyvault/store.js";
 
 async function main() {
   const azureVaultUrl: string = process.env.AZURE_KEYVAULT_URL as string;
   const keyVaultSecretStore = new AzureKeyVaultSecretStore(azureVaultUrl);
   const keyVaultSecret = new KeyVaultService(keyVaultSecretStore);
-  const keyVaultHandler = new KeyVaultHandler(keyVaultSecret);
+  const keyVaultHandler = new KeyVaultController(keyVaultSecret);
 
   const app = new Hono();
 

@@ -2,7 +2,7 @@ import type { Context } from 'hono'
 import { IKeyVaultService } from './service';
 
 
-export class KeyVaultHandler {
+export class KeyVaultController {
     constructor(private readonly service: IKeyVaultService) {
     }
 
