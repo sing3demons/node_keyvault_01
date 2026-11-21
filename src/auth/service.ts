@@ -607,6 +607,65 @@ export class AuthService implements TokenAuthenticator {
   }
 
   /**
+   * RFC 6749 §4.4 client_credentials: a token for the client itself (no user). Only API scopes — the OIDC
+   * identity scopes describe a user — and no refresh token (§4.4.3) or ID Token.
+   */
+  async clientCredentials(p: { client: ClientCredentials; scope?: string }): Promise<TokenResponse> {
+    const client = await this.clients.authenticate(p.client);
+    if (!client.grantTypes.includes("client_credentials") || client.tokenEndpointAuthMethod === "none") {
+      throw new OAuthError("unauthorized_client", "This client may not use the client_credentials grant");
+    }
+    const apiScopes = client.scope.split(" ").filter((s) => !OIDC_SCOPES.includes(s as never));
+    const scope = p.scope !== undefined ? this.normalizeScope(p.scope) : apiScopes.sort().join(" ");
+    if (!scope || !this.within(scope, apiScopes.join(" "))) {
+      throw new OAuthError("invalid_scope", `Allowed scopes for client_credentials: ${apiScopes.join(" ") || "(none)"}`);
+    }
+    const accessToken = randomToken();
+    await this.repo.tokens.createPair(
+      {
+        id: sha256(accessToken),
+        clientId: client.id,
+        scope,
+        familyId: randomToken(16),
+        expiresAt: expiresIn(client.accessTokenTtlSec * 1000)
+      },
+      null
+    );
+    return { access_token: accessToken, token_type: "Bearer", expires_in: client.accessTokenTtlSec, scope };
+  }
+
+  /**
+   * RFC 7662 token introspection, for resource servers (confidential clients) holding an opaque token.
+   * Anything unknown, expired or revoked is just { active: false }.
+   */
+  async introspect(token: string | undefined, credentials: ClientCredentials): Promise<Record<string, unknown>> {
+    const caller = await this.clients.authenticate(credentials);
+    if (caller.tokenEndpointAuthMethod === "none") {
+      throw new OAuthError("invalid_client", "Public clients cannot introspect tokens", 401);
+    }
+    if (!token) return { active: false };
+    const hash = sha256(token);
+    const now = new Date();
+    const access = await this.repo.tokens.findActiveAccess(hash, now);
+    const refresh = access ? null : await this.repo.tokens.findRefresh(hash);
+    const doc = access ?? (refresh && !refresh.revoked && refresh.expiresAt > now ? refresh : null);
+    if (!doc) return { active: false };
+    const user = doc.userId ? await this.repo.users.findById(doc.userId) : null;
+    if (doc.userId && !user) return { active: false };
+    return {
+      active: true,
+      scope: doc.scope,
+      client_id: doc.clientId,
+      token_type: access ? "Bearer" : "refresh_token",
+      exp: Math.floor(doc.expiresAt.getTime() / 1000),
+      iss: this.idTokens.issuer,
+      // user tokens: who; client_credentials tokens: the client itself (RFC 7662 §2.2 "sub")
+      sub: user ? user.id : doc.clientId,
+      ...(user ? { username: user.username } : {})
+    };
+  }
+
+  /**
    * RFC 7009 — the client authenticates as at the token endpoint and may revoke only its own tokens
    * (others are ignored, still 200). Revoking either token type ends the whole session (family).
    */
@@ -625,6 +684,10 @@ export class AuthService implements TokenAuthenticator {
   async authenticate(accessToken: string): Promise<AuthenticatedUser | null> {
     const token = await this.repo.tokens.findActiveAccess(sha256(accessToken), new Date());
     if (!token) return null;
+    if (!token.userId) {
+      // valid, but issued to a client (client_credentials): these endpoints act for a user
+      throw new HttpError(403, "This endpoint needs a user's access token, not a client_credentials token", "insufficient_scope");
+    }
     const user = await this.repo.users.findById(token.userId);
     if (!user) return null;
     return {

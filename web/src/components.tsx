@@ -3,6 +3,7 @@ import {
   api,
   userClientsApi,
   type ClientsApi,
+  type GrantType,
   LANGUAGES,
   PERMISSIONS,
   type Account,
@@ -1131,10 +1132,13 @@ export function ClientsPanel({ clientsApi, onClose }: { clientsApi: ClientsApi; 
                   <div>
                     <strong>{c.client_name}</strong>
                     <span className="badge">{c.token_endpoint_auth_method === "none" ? "Public" : "Confidential"}</span>
-                    <span className="badge">Email {c.email_verification === "link" ? "link" : "code"}</span>
+                    {c.grant_types.includes("authorization_code") && (
+                      <span className="badge">Email {c.email_verification === "link" ? "link" : "code"}</span>
+                    )}
+                    {c.grant_types.includes("client_credentials") && <span className="badge">Client credentials</span>}
                   </div>
                   <div className="hint mono">{c.client_id}</div>
-                  <div className="hint">{c.redirect_uris.join(" · ")}</div>
+                  {c.redirect_uris.length > 0 && <div className="hint">{c.redirect_uris.join(" · ")}</div>}
                 </div>
                 <div className="device-actions">
                   <button className="btn-ghost" disabled={busy} onClick={() => setEditing(c)} title="Edit">
@@ -1205,7 +1209,16 @@ function ClientForm({
   const [authMethod, setAuthMethod] = useState(start.token_endpoint_auth_method);
   const [redirects, setRedirects] = useState(start.redirect_uris.join("\n"));
   const [scopes, setScopes] = useState(new Set(start.scope.split(" ").filter(Boolean)));
-  const [refresh, setRefresh] = useState(start.grant_types.includes("refresh_token"));
+  const [grants, setGrants] = useState(new Set<GrantType>(start.grant_types));
+  const toggleGrant = (g: GrantType) =>
+    setGrants((set) => {
+      const next = new Set(set);
+      if (next.has(g)) next.delete(g);
+      else next.add(g);
+      if (g === "authorization_code" && !next.has(g)) next.delete("refresh_token"); // refresh needs the code grant
+      return next;
+    });
+  const userSignIn = grants.has("authorization_code");
   const [initiate, setInitiate] = useState(start.initiate_login_uri ?? "");
   const [homepage, setHomepage] = useState(start.client_uri ?? "");
   const [emailMethod, setEmailMethod] = useState(start.email_verification);
@@ -1231,8 +1244,8 @@ function ClientForm({
       ...(client ? { client_id: client.client_id } : clientId.trim() ? { client_id: clientId.trim() } : {}),
       client_name: name.trim(),
       token_endpoint_auth_method: authMethod,
-      redirect_uris: redirects.split(/\s+/).filter(Boolean),
-      grant_types: refresh ? ["authorization_code", "refresh_token"] : ["authorization_code"],
+      redirect_uris: userSignIn ? redirects.split(/\s+/).filter(Boolean) : [],
+      grant_types: [...grants],
       scope: [...scopes].join(" "),
       ...(initiate.trim() ? { initiate_login_uri: initiate.trim() } : {}),
       ...(homepage.trim() ? { client_uri: homepage.trim() } : {}),
@@ -1279,11 +1292,43 @@ function ClientForm({
           </select>
           <span className="hint">Browser and mobile apps are public; server-side apps that can keep a secret are confidential.</span>
         </label>
-        <label>
-          Redirect URIs
-          <textarea value={redirects} onChange={(e) => setRedirects(e.target.value)} rows={3} required placeholder="https://app.example.com/callback" />
-          <span className="hint">One per line, matched exactly. https (http only for localhost).</span>
-        </label>
+        <div>
+          <div className="field-label">Grant types</div>
+          <div className="check-row">
+            <label className="check">
+              <input type="checkbox" checked={grants.has("authorization_code")} onChange={() => toggleGrant("authorization_code")} />{" "}
+              authorization_code (users sign in)
+            </label>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={grants.has("refresh_token")}
+                disabled={!userSignIn}
+                onChange={() => toggleGrant("refresh_token")}
+              />{" "}
+              refresh_token
+            </label>
+            <label className="check">
+              <input
+                type="checkbox"
+                checked={grants.has("client_credentials")}
+                disabled={authMethod === "none"}
+                onChange={() => toggleGrant("client_credentials")}
+              />{" "}
+              client_credentials (machine-to-machine)
+            </label>
+          </div>
+          <span className="hint">
+            client_credentials needs a confidential client; its tokens get only API scopes (e.g. secrets) and no refresh / ID token.
+          </span>
+        </div>
+        {userSignIn && (
+          <label>
+            Redirect URIs
+            <textarea value={redirects} onChange={(e) => setRedirects(e.target.value)} rows={3} required placeholder="https://app.example.com/callback" />
+            <span className="hint">One per line, matched exactly. https (http only for localhost).</span>
+          </label>
+        )}
         <div>
           <div className="field-label">Scopes</div>
           <div className="check-row">
@@ -1292,9 +1337,6 @@ function ClientForm({
                 <input type="checkbox" checked={scopes.has(s)} onChange={() => toggleScope(s)} /> {s}
               </label>
             ))}
-            <label className="check">
-              <input type="checkbox" checked={refresh} onChange={(e) => setRefresh(e.target.checked)} /> refresh tokens
-            </label>
           </div>
         </div>
         <label>

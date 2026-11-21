@@ -103,6 +103,7 @@ async function main() {
   app.get("/oauth/authorize", (c) => auth.authorize(c));
   app.post("/oauth/token", (c) => auth.token(c));
   app.post("/oauth/revoke", (c) => auth.revoke(c));
+  app.post("/oauth/introspect", (c) => auth.introspect(c));
   app.get("/oauth/userinfo", bearer, (c) => auth.userinfo(c));
 
   // --- Authentication used by the login page (password = argon2id, passkey = fido2-lib)

@@ -135,7 +135,8 @@ export interface AuthCode {
 
 export interface AccessToken {
   id: string; // sha256(token)
-  userId: string;
+  /** Absent for client_credentials tokens: they act for the client itself, not a user. */
+  userId?: string;
   clientId: string;
   scope: string;
   familyId: string;
@@ -145,6 +146,7 @@ export interface AccessToken {
 }
 
 export interface RefreshToken extends AccessToken {
+  userId: string;
   revoked: boolean;
   /** Original authentication time, carried into ID Tokens issued on refresh. */
   authTime?: Date;
@@ -239,7 +241,8 @@ export interface DeviceSignIn {
 export const TOKEN_ENDPOINT_AUTH_METHODS = ["none", "client_secret_basic", "client_secret_post"] as const;
 export type TokenEndpointAuthMethod = (typeof TOKEN_ENDPOINT_AUTH_METHODS)[number];
 
-export const CLIENT_GRANT_TYPES = ["authorization_code", "refresh_token"] as const;
+/** client_credentials (RFC 6749 §4.4): machine-to-machine, confidential clients only. */
+export const CLIENT_GRANT_TYPES = ["authorization_code", "refresh_token", "client_credentials"] as const;
 export type ClientGrantType = (typeof CLIENT_GRANT_TYPES)[number];
 
 /**
@@ -254,7 +257,7 @@ export interface OAuthClient {
   tokenEndpointAuthMethod: TokenEndpointAuthMethod;
   /** sha256 of the client_secret (confidential clients only; the secret is shown once). */
   secretHash?: string;
-  /** Exact-match list (RFC 6749 §3.1.2.2); https, or http on loopback for development. */
+  /** Exact-match list (RFC 6749 §3.1.2.2); https, or http on loopback. Empty for client_credentials-only clients. */
   redirectUris: string[];
   grantTypes: ClientGrantType[];
   /** Space-separated scopes the client may request; also the default when a request names none. */

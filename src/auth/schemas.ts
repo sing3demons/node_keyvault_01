@@ -169,7 +169,8 @@ export const clientMetadataBody = z.object({
     .regex(/^[A-Za-z0-9._~-]{3,64}$/, "client_id must be 3-64 chars: A-Z a-z 0-9 . _ ~ -")
     .optional(),
   client_name: z.string().trim().min(1, "client_name is required").max(100),
-  redirect_uris: z.array(z.string().trim().min(1).max(2000)).min(1, "at least one redirect_uri is required").max(20),
+  /** Required when grant_types include authorization_code (checked by the service). */
+  redirect_uris: z.array(z.string().trim().min(1).max(2000)).max(20).default([]),
   token_endpoint_auth_method: z.enum(TOKEN_ENDPOINT_AUTH_METHODS).optional(),
   grant_types: z.array(z.enum(CLIENT_GRANT_TYPES)).min(1).optional(),
   response_types: z.array(z.string()).optional(),
@@ -221,8 +222,23 @@ export const tokenBody = z.discriminatedUnion("grant_type", [
     client_id: nonEmpty.optional(),
     client_secret: nonEmpty.optional(),
     scope: z.string().optional()
+  }),
+  // RFC 6749 §4.4.2
+  z.object({
+    grant_type: z.literal("client_credentials"),
+    client_id: nonEmpty.optional(),
+    client_secret: nonEmpty.optional(),
+    scope: z.string().optional()
   })
 ]);
+
+/** POST /oauth/introspect (RFC 7662 §2.1) */
+export const introspectBody = z.object({
+  token: z.string().optional(),
+  token_type_hint: z.string().optional(),
+  client_id: z.string().optional(),
+  client_secret: z.string().optional()
+});
 
 export const revokeBody = z.object({
   token: z.string().optional(),
@@ -242,8 +258,8 @@ export function parseTokenRequest(form: Record<string, unknown>): z.output<typeo
   if (grantType === undefined || grantType === "") {
     throw new OAuthError("invalid_request", "grant_type is required");
   }
-  if (grantType !== "authorization_code" && grantType !== "refresh_token") {
-    throw new OAuthError("unsupported_grant_type", "Supported: authorization_code, refresh_token");
+  if (grantType !== "authorization_code" && grantType !== "refresh_token" && grantType !== "client_credentials") {
+    throw new OAuthError("unsupported_grant_type", "Supported: authorization_code, refresh_token, client_credentials");
   }
   throw new OAuthError("invalid_request", formatZodError(result.error));
 }

@@ -11,6 +11,7 @@ import {
   clientIdParam,
   clientMetadataBody,
   emailLinkResumeBody,
+  introspectBody,
   credentialIdParam,
   emailCodeBody,
   emailLinkBody,
@@ -92,12 +93,27 @@ export class AuthController {
     // OAuthError is an HttpError, so app.onError renders the RFC 6749 §5.2 body (headers above are kept)
     const req = parseTokenRequest(await c.req.parseBody());
     const client = this.clientCredentials(c, req);
-    const tokens = await this.withClientChallenge(c, client, () =>
-      req.grant_type === "authorization_code"
-        ? this.auth.exchangeCode({ code: req.code, redirectUri: req.redirect_uri, client, codeVerifier: req.code_verifier })
-        : this.auth.refresh({ refreshToken: req.refresh_token, client, scope: req.scope })
-    );
+    const tokens = await this.withClientChallenge(c, client, () => {
+      switch (req.grant_type) {
+        case "authorization_code":
+          return this.auth.exchangeCode({ code: req.code, redirectUri: req.redirect_uri, client, codeVerifier: req.code_verifier });
+        case "refresh_token":
+          return this.auth.refresh({ refreshToken: req.refresh_token, client, scope: req.scope });
+        case "client_credentials":
+          return this.auth.clientCredentials({ client, scope: req.scope });
+      }
+    });
     return c.json(tokens);
+  }
+
+  /** POST /oauth/introspect — RFC 7662, for confidential clients (resource servers). */
+  async introspect(c: Context) {
+    c.header("Cache-Control", "no-store");
+    const form = await c.req.parseBody().catch(() => ({}));
+    const body = introspectBody.safeParse(form);
+    const data = body.success ? body.data : {};
+    const client = this.clientCredentials(c, data);
+    return c.json(await this.withClientChallenge(c, client, () => this.auth.introspect(data.token, client)));
   }
 
   /**

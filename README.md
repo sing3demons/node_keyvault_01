@@ -103,6 +103,11 @@ type Credential =
 - ชนิด client: `none` = public (SPA / mobile, ใช้ PKCE อย่างเดียว) · `client_secret_basic` (default ตาม RFC 7591) / `client_secret_post` = confidential — secret แสดงครั้งเดียวตอนสร้าง/rotate, DB เก็บแค่ SHA-256
 - ตั้งค่าต่อ client (แทน env เดิม): `access_token_lifetime`, `refresh_token_lifetime`, `id_token_lifetime` (ไม่เกิน `OIDC_RETIRED_KEY_GRACE_SEC`), `email_verification` (`code` | `link`); refresh token ออกให้เฉพาะ client ที่มี grant `refresh_token`; scope ที่ขอต้องอยู่ใน `scope` ของ client (ไม่ส่ง scope = ใช้ของ client)
 - `/oauth/token` และ `/oauth/revoke` ต้องยืนยันตัว client ตามวิธีที่ลงทะเบียน (RFC 6749 §2.3, RFC 7009); revoke ได้เฉพาะ token ของตัวเอง
+- **`client_credentials`** (RFC 6749 §4.4, machine-to-machine): เฉพาะ confidential client, ไม่ต้องมี redirect URI; token ได้เฉพาะ API scope (ตัด `openid`/`profile`/`email` ออก), ไม่มี refresh / ID token, ไม่มี user — endpoint ที่ต้องการ user (`/secrets`, `/auth/me`, `/oauth/userinfo`) ตอบ 403
+  ```bash
+  curl -u "$CLIENT_ID:$CLIENT_SECRET" -d grant_type=client_credentials -d scope=secrets http://localhost:3000/oauth/token
+  ```
+- **`/oauth/introspect`** (RFC 7662): resource server (confidential client) ส่ง token มาตรวจได้ → `{ active, scope, client_id, sub, username?, exp, token_type }` หรือ `{ active: false }`
 - ลบ client = revoke token ของมันทั้งหมด (RFC 7592); ลบ client ที่ตัวเอง login อยู่ไม่ได้
 - **Master credential** — `MASTER_CREDENTIALS` = base64(`username:password`) (password ≥ 16 ตัว) ใช้จัดการ client ได้โดยไม่ต้องมี user admin: เปิดหน้า `/manage` แล้ว login ด้วย username/password นั้น หรือเรียก API ด้วย `Authorization: Basic $MASTER_CREDENTIALS`; จัดการได้เฉพาะ `/admin/clients` (ไม่รวม users / secrets); ไม่ตั้ง = ปิด, ค่าผิดรูปแบบ = server ไม่ start
   ```bash
@@ -152,7 +157,7 @@ Flow: UI → `GET /oauth/authorize` → redirect ไป `/login?request_id=…` 
 
 - `GET /health`
 - `GET /.well-known/openid-configuration` · `GET /.well-known/jwks.json`
-- `GET /oauth/authorize` · `POST /oauth/token` · `POST /oauth/revoke` · `GET /oauth/userinfo` (Bearer)
+- `GET /oauth/authorize` · `POST /oauth/token` (`authorization_code` / `refresh_token` / `client_credentials`) · `POST /oauth/revoke` · `POST /oauth/introspect` · `GET /oauth/userinfo` (Bearer)
 - `POST /auth/register` (`username`, `email`, `password`, `profiles`, `preferredLang?`, `request_id?`) → account + `verification` (ส่งรหัสไป email แล้ว)
 - `POST /auth/login/password` (`username` = username หรือ email) → `{ redirect }` หรือ `{ verify }` (ต้องกรอกรหัสจาก email ต่อ)
 - `POST /auth/email/verify` (`challengeId`, `code`, `request_id?`) → `{ redirect }` (ขั้น login) หรือ `{ verified: true }` · `POST /auth/email/resend` (`challengeId`)

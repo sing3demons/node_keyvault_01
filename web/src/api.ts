@@ -68,6 +68,8 @@ export interface AccountUpdate {
 
 export type SignInMethod = "password" | "password+email_code" | "password+email_link" | "passkey" | "registration";
 
+export type GrantType = "authorization_code" | "refresh_token" | "client_credentials";
+
 /** OAuth client as /admin/clients returns it (RFC 7591 metadata names + this server's extensions). */
 export interface OAuthClient {
   client_id: string;
@@ -77,7 +79,7 @@ export interface OAuthClient {
   client_secret?: string;
   token_endpoint_auth_method: "none" | "client_secret_basic" | "client_secret_post";
   redirect_uris: string[];
-  grant_types: ("authorization_code" | "refresh_token")[];
+  grant_types: GrantType[];
   scope: string;
   client_uri?: string;
   initiate_login_uri?: string;

@@ -225,7 +225,18 @@ export class ClientService {
 
     // RFC 7591 §2: grant_types defaults to authorization_code; refresh only makes sense alongside it
     const grantTypes = [...new Set<ClientGrantType>(m.grant_types ?? ["authorization_code"])];
-    if (!grantTypes.includes("authorization_code")) throw invalid("grant_types must include authorization_code");
+    const authMethod = m.token_endpoint_auth_method ?? "client_secret_basic";
+    if (grantTypes.includes("refresh_token") && !grantTypes.includes("authorization_code")) {
+      throw invalid("refresh_token needs authorization_code (client_credentials gets no refresh token)");
+    }
+    // RFC 6749 §4.4: only confidential clients
+    if (grantTypes.includes("client_credentials") && authMethod === "none") {
+      throw invalid("client_credentials needs a confidential client (client_secret_basic or client_secret_post)");
+    }
+    // redirect-based grant => at least one redirect_uri (RFC 7591 §2)
+    if (grantTypes.includes("authorization_code") && m.redirect_uris.length === 0) {
+      throw new HttpError(400, "at least one redirect_uri is required for authorization_code", "invalid_redirect_uri");
+    }
     if (m.response_types && m.response_types.some((t) => t !== "code")) throw invalid('response_types must be ["code"]');
 
     const scopes = [...new Set((m.scope ?? "openid profile email").split(" ").filter(Boolean))];
@@ -240,7 +251,7 @@ export class ClientService {
     return {
       name: m.client_name,
       // RFC 7591 §2: the default is client_secret_basic
-      tokenEndpointAuthMethod: m.token_endpoint_auth_method ?? "client_secret_basic",
+      tokenEndpointAuthMethod: authMethod,
       redirectUris: [...new Set(m.redirect_uris)],
       grantTypes,
       scope: scopes.sort().join(" "),

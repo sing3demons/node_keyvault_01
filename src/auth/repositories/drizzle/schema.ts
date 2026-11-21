@@ -193,9 +193,8 @@ export const accessTokens = pgTable(
   "access_tokens",
   {
     id: text("id").primaryKey(), // sha256(token)
-    userId: uuid("user_id")
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
+    // NULL for client_credentials tokens (no user)
+    userId: uuid("user_id").references(() => users.id, { onDelete: "cascade" }),
     clientId: text("client_id").notNull(),
     scope: text("scope").notNull(),
     familyId: text("family_id").notNull(),

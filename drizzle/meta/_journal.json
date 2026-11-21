@@ -64,6 +64,13 @@
       "when": 1795272676084,
       "tag": "0008_oauth_clients",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1795275067196,
+      "tag": "0009_client_credentials",
+      "breakpoints": true
     }
   ]
 }
