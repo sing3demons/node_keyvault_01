@@ -97,7 +97,12 @@ type Credential =
 - password ที่ `algorithm` ไม่ใช่ argon2id (เช่น import มาจากระบบอื่น) จะถูก verify แล้ว upgrade เป็น argon2id ตอน login — เพิ่มตัว verify ได้ที่ [src/shared/hashing.ts](src/shared/hashing.ts)
 - ลบ credential สุดท้ายของ user ไม่ได้
 
-**ยืนยัน email (รหัส 6 หลัก)**
+**ยืนยัน email (รหัส 6 หลัก หรือ link)**
+
+- เลือกวิธีด้วย `EMAIL_VERIFICATION`:
+  - `code` (default) — ส่งรหัส 6 หลัก ให้กรอกในหน้าที่ขอ
+  - `link` — ส่ง link `<APP_URL>/verify-email?id=…&token=…` (token 256-bit) กดแล้วกด "Confirm" (กัน mail scanner เปิด link เอง) → หน้า login/Account ที่รออยู่จะไปต่อเอง (poll `POST /auth/email/status` ทุก 2 วินาที) เปิด link จากมือถือก็ได้ เพราะ sign-in จบที่หน้าเดิมซึ่งถือ PKCE verifier
+  - `APP_URL` ไม่ตั้ง = ใช้ origin ของ `OAUTH_REDIRECT_URIS` ตัวแรก; challenge ที่ส่งไปแล้วใช้วิธีเดิมต่อแม้เปลี่ยน config
 
 - สมัครสมาชิก → ส่งรหัสไปที่ email → กรอกรหัสในหน้า login แล้วเข้าระบบเลย (`Account.emailVerified`, claim `email_verified`)
 - login ด้วย **email + password** → ต้องกรอกรหัสที่ส่งไป email ทุกครั้ง; login ด้วย **username + password** → ไม่ต้อง ยกเว้น email ยังไม่ได้ยืนยัน (เช่น บัญชีเก่า) จะให้ยืนยันก่อน
@@ -137,6 +142,7 @@ Flow: UI → `GET /oauth/authorize` → redirect ไป `/login?request_id=…` 
 - `POST /auth/register` (`username`, `email`, `password`, `profiles`, `preferredLang?`, `request_id?`) → account + `verification` (ส่งรหัสไป email แล้ว)
 - `POST /auth/login/password` (`username` = username หรือ email) → `{ redirect }` หรือ `{ verify }` (ต้องกรอกรหัสจาก email ต่อ)
 - `POST /auth/email/verify` (`challengeId`, `code`, `request_id?`) → `{ redirect }` (ขั้น login) หรือ `{ verified: true }` · `POST /auth/email/resend` (`challengeId`)
+- `EMAIL_VERIFICATION=link`: `POST /auth/email/link` (`challengeId`, `token` จาก link) → `{ approved }` · `POST /auth/email/status` (`challengeId`, `request_id?`) → `{ pending }` / `{ redirect }` / `{ verified }`
 - `GET /auth/me` · `PATCH /auth/me` · `POST /auth/me/email/verification` (Bearer)
 - `GET /auth/me/devices` · `POST /auth/me/devices/:id/sign-out` · `DELETE /auth/me/devices/:id` (Bearer)
 - `POST /auth/webauthn/login/options` · `POST /auth/webauthn/login/verify`

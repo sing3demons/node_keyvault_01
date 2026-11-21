@@ -7,7 +7,9 @@ import {
   authorizeQuery,
   credentialIdParam,
   emailCodeBody,
+  emailLinkBody,
   emailResendBody,
+  emailStatusBody,
   passkeyLoginOptionsBody,
   passkeyLoginVerifyBody,
   passkeyRegisterVerifyBody,
@@ -117,7 +119,21 @@ export class AuthController {
     return c.json(await this.auth.confirmEmailCode(body.challengeId, body.code, body.request_id, device));
   }
 
-  /** POST /auth/email/resend — { challengeId } -> a fresh code is emailed */
+  /** POST /auth/email/link — { challengeId, token } from the emailed link -> { approved, reason, signIn } */
+  async approveEmailLink(c: Context) {
+    const { challengeId, token } = await parseJsonBody(c, emailLinkBody);
+    return c.json(await this.auth.approveEmailLink(challengeId, token));
+  }
+
+  /** POST /auth/email/status — { challengeId, request_id? } -> { pending } | { redirect } | { verified } */
+  async emailChallengeStatus(c: Context) {
+    c.header("Cache-Control", "no-store");
+    const body = await parseJsonBody(c, emailStatusBody);
+    const device = body.request_id !== undefined ? this.device(c) : undefined;
+    return c.json(await this.auth.emailChallengeStatus(body.challengeId, body.request_id, device));
+  }
+
+  /** POST /auth/email/resend — { challengeId } -> a fresh code / link is emailed */
   async resendEmailCode(c: Context) {
     const { challengeId } = await parseJsonBody(c, emailResendBody);
     return c.json(await this.auth.resendEmailCode(challengeId));

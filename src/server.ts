@@ -91,6 +91,8 @@ async function main() {
   // emailed codes: registration, sign-in with an email address, verifying an address
   app.post("/auth/email/verify", (c) => auth.confirmEmailCode(c));
   app.post("/auth/email/resend", (c) => auth.resendEmailCode(c));
+  app.post("/auth/email/link", (c) => auth.approveEmailLink(c)); // EMAIL_VERIFICATION=link
+  app.post("/auth/email/status", (c) => auth.emailChallengeStatus(c));
   app.post("/auth/me/email/verification", bearer, (c) => auth.startEmailVerification(c));
   // devices the user signed in from
   app.get("/auth/me/devices", bearer, (c) => auth.listDevices(c));

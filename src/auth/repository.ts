@@ -71,6 +71,8 @@ export interface EmailChallengeRepository {
   findActive(id: string, now: Date): Promise<EmailChallenge | null>;
   /** Atomically count a wrong code; returns the new attempt count, or null if the challenge is gone. */
   recordFailedAttempt(id: string): Promise<number | null>;
+  /** Link confirmed: set approvedAt. @returns false if the challenge is gone */
+  approve(id: string, at: Date): Promise<boolean>;
   /** Resend: store the new code hash, reset attempts and count the send. */
   replaceCode(id: string, codeHash: string, sentAt: Date, expiresAt: Date): Promise<void>;
   /** Atomically delete; true only for the caller that removed it (single use). */

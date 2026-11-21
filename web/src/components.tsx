@@ -11,7 +11,7 @@ import {
   type SecretSummary,
   type SignInMethod
 } from "./api";
-import { confirmEmailCode, resendEmailCode, type PendingVerification } from "./auth";
+import { confirmEmailCode, emailChallengeStatus, resendEmailCode, type PendingVerification } from "./auth";
 import { CopyIcon, EditIcon, EyeIcon, EyeOffIcon, LockIcon, ShareIcon, TransferIcon, TrashIcon } from "./icons";
 
 const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
@@ -56,15 +56,21 @@ function Modal({ open, onClose, children }: { open: boolean; onClose: () => void
 interface CodeFormProps {
   pending: PendingVerification;
   submitLabel: string;
-  /** Throw to show an error; resolve when done. */
+  /** Code method. Throw to show an error; resolve when done. */
   onConfirm: (code: string) => Promise<void>;
+  /** Link method: called every 2s; resolve true once the link was opened (and handled). Throw to stop with an error. */
+  onPoll: () => Promise<boolean>;
   onCancel?: () => void;
   cancelLabel?: string;
 }
 
-/** "Enter the 6-digit code we sent to s•••@example.com", with a resend button that honours the cooldown. */
-export function EmailCodeForm({ pending: initial, submitLabel, onConfirm, onCancel, cancelLabel = "Back" }: CodeFormProps) {
-  const [pending, setPending] = useState(initial);
+/**
+ * "Enter the 6-digit code we sent to s•••@example.com" — or, for links, "open the link we sent" while
+ * polling — with a resend button that honours the cooldown.
+ */
+export function EmailCodeForm({ pending: initial, submitLabel, onConfirm, onPoll, onCancel, cancelLabel = "Back" }: CodeFormProps) {
+  /** sentKey: bumped on resend so polling restarts even though the challenge id stays the same. */
+  const [pending, setPending] = useState<PendingVerification & { sentKey?: number }>(initial);
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -77,6 +83,31 @@ export function EmailCodeForm({ pending: initial, submitLabel, onConfirm, onCanc
   }, []);
 
   const wait = Math.max(0, Math.ceil((new Date(pending.resendAt).getTime() - now) / 1000));
+  const isLink = pending.method === "link";
+  const pollRef = useRef(onPoll);
+  pollRef.current = onPoll;
+  const [pollError, setPollError] = useState("");
+
+  // link method: wait for the link to be opened (in any browser / device)
+  useEffect(() => {
+    if (!isLink) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const tick = async () => {
+      try {
+        if (await pollRef.current()) return;
+      } catch (e) {
+        if (!stopped) setPollError((e as Error).message);
+        return;
+      }
+      if (!stopped) timer = setTimeout(tick, 2000);
+    };
+    timer = setTimeout(tick, 2000);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [isLink, pending.challengeId, pending.sentKey]);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -94,13 +125,47 @@ export function EmailCodeForm({ pending: initial, submitLabel, onConfirm, onCanc
     setError("");
     setNotice("");
     try {
-      setPending(await resendEmailCode(pending.challengeId));
+      setPending({ ...(await resendEmailCode(pending.challengeId)), sentKey: Date.now() });
       setCode("");
-      setNotice("A new code is on its way.");
+      setPollError("");
+      setNotice(isLink ? "A new link is on its way — the previous one no longer works." : "A new code is on its way.");
     } catch (e) {
       setError((e as Error).message);
     }
   };
+
+  const actions = (
+    <div className="code-actions">
+      <button type="button" className="btn-ghost" onClick={resend} disabled={busy || wait > 0}>
+        {wait > 0 ? `Resend ${isLink ? "link" : "code"} (${wait}s)` : `Resend ${isLink ? "link" : "code"}`}
+      </button>
+      {onCancel && (
+        <button type="button" className="btn-ghost" onClick={onCancel} disabled={busy}>
+          {cancelLabel}
+        </button>
+      )}
+    </div>
+  );
+
+  if (isLink) {
+    return (
+      <div className="dlg-body">
+        <p>
+          We sent a link to <strong>{pending.email}</strong>. Open it — on this or any other device —{" "}
+          {pending.reason === "login" ? "to finish signing in" : "to confirm your email address"}.
+        </p>
+        {!pollError && (
+          <div className="waiting">
+            <span className="spinner" /> Waiting for you to open the link…
+          </div>
+        )}
+        <span className="hint">The link expires {timeAgo(pending.expiresAt)}. Check your spam folder if it has not arrived.</span>
+        <div className="error-text">{error || pollError}</div>
+        {notice && !error && !pollError && <div className="hint">{notice}</div>}
+        {actions}
+      </div>
+    );
+  }
 
   return (
     <form className="dlg-body" onSubmit={submit}>
@@ -128,16 +193,7 @@ export function EmailCodeForm({ pending: initial, submitLabel, onConfirm, onCanc
       <button className="btn-primary auth-submit" type="submit" disabled={busy || code.length !== 6}>
         {busy ? "Checking…" : submitLabel}
       </button>
-      <div className="code-actions">
-        <button type="button" className="btn-ghost" onClick={resend} disabled={busy || wait > 0}>
-          {wait > 0 ? `Resend code (${wait}s)` : "Resend code"}
-        </button>
-        {onCancel && (
-          <button type="button" className="btn-ghost" onClick={onCancel} disabled={busy}>
-            {cancelLabel}
-          </button>
-        )}
-      </div>
+      {actions}
     </form>
   );
 }
@@ -449,6 +505,12 @@ export function AccountDialog({ account, open, onClose, onSaved, onVerified }: A
                 await confirmEmailCode(verifying.challengeId, code);
                 setVerifying(null);
                 onVerified(await api.me());
+              }}
+              onPoll={async () => {
+                if ("pending" in (await emailChallengeStatus(verifying.challengeId))) return false;
+                setVerifying(null);
+                onVerified(await api.me());
+                return true;
               }}
             />
           </div>

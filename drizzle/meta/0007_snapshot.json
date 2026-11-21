@@ -1,5 +1,5 @@
 {
-  "id": "52464bf2-9a50-4c8e-a52e-320b48b37ccf",
+  "id": "0163f876-5af4-478d-a1b8-dff139852804",
   "prevId": "32f59015-7931-4440-bfcf-ebc9eb9d9278",
   "version": "7",
   "dialect": "postgresql",
@@ -477,6 +477,13 @@
           "primaryKey": false,
           "notNull": true
         },
+        "method": {
+          "name": "method",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'code'"
+        },
         "user_id": {
           "name": "user_id",
           "type": "uuid",
@@ -494,6 +501,12 @@
           "type": "text",
           "primaryKey": false,
           "notNull": true
+        },
+        "approved_at": {
+          "name": "approved_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
         },
         "attempts": {
           "name": "attempts",

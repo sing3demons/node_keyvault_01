@@ -302,6 +302,8 @@ export interface PendingVerification {
   /** Masked address the code went to. */
   email: string;
   reason: "register" | "verify_email" | "login";
+  /** "code": type the 6 digits; "link": open the email, this page notices (emailChallengeStatus). */
+  method: "code" | "link";
   expiresAt: string;
   resendAt: string;
 }
@@ -335,6 +337,17 @@ export const confirmSignInCode = (requestId: string, challengeId: string, code: 
 /** Account page / API: confirm a code that only verifies the address. */
 export const confirmEmailCode = (challengeId: string, code: string) =>
   postJson<{ verified: true }>("/auth/email/verify", { challengeId, code });
+
+/** Has the emailed link been opened? Login page passes requestId and gets { redirect } once it has. */
+export const emailChallengeStatus = (challengeId: string, requestId?: string) =>
+  postJson<{ pending: true } | { redirect: string } | { verified: true }>("/auth/email/status", {
+    challengeId,
+    ...(requestId ? { request_id: requestId } : {})
+  });
+
+/** The page an emailed link opens: approve it. */
+export const approveEmailLink = (challengeId: string, token: string) =>
+  postJson<{ approved: true; reason: PendingVerification["reason"]; signIn: boolean }>("/auth/email/link", { challengeId, token });
 
 export const resendEmailCode = (challengeId: string) => postJson<PendingVerification>("/auth/email/resend", { challengeId });
 

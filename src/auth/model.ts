@@ -160,15 +160,28 @@ export type EmailChallengePurpose = "signin" | "verify";
 /** Why the code was sent: picks the email wording and the sign-in method recorded for the device. */
 export type EmailChallengeReason = "register" | "verify_email" | "login";
 
-/** A one-time code sent to an email address. Only a hash of the code is stored. */
+/**
+ * "code": a 6-digit code typed into the page that asked for it.
+ * "link": a link with a 256-bit token; opening it (any browser/device) approves the challenge, and the page
+ * that asked for it notices by polling and finishes there (it holds the PKCE verifier / session).
+ */
+export const EMAIL_VERIFICATION_METHODS = ["code", "link"] as const;
+export type EmailVerificationMethod = (typeof EMAIL_VERIFICATION_METHODS)[number];
+
+/** A one-time code or link sent to an email address. Only a hash of the code / link token is stored. */
 export interface EmailChallenge {
   id: string;
   purpose: EmailChallengePurpose;
   reason: EmailChallengeReason;
+  /** Fixed when the challenge is created, so changing the config does not break pending ones. */
+  method: EmailVerificationMethod;
   userId: string;
   /** Address the code went to; it is marked verified only if the user still has this address. */
   email: string;
+  /** sha256 of the code (method "code") or link token (method "link"). */
   codeHash: string;
+  /** Link opened and confirmed; waiting for the requesting page to pick it up (method "link"). */
+  approvedAt?: Date;
   /** Wrong codes entered so far. */
   attempts: number;
   /** Times a code was emailed for this challenge (first send + resends). */

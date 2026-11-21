@@ -266,6 +266,14 @@ export class DrizzleAuthRepository implements AuthRepository {
         .returning({ attempts: emailChallenges.attempts });
       return row ? row.attempts : null;
     },
+    approve: async (id: string, at: Date) =>
+      (
+        await this.db
+          .update(emailChallenges)
+          .set({ approvedAt: at })
+          .where(eq(emailChallenges.id, id))
+          .returning({ id: emailChallenges.id })
+      ).length > 0,
     replaceCode: async (id: string, codeHash: string, sentAt: Date, expiresAt: Date) => {
       await this.db
         .update(emailChallenges)

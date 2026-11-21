@@ -90,11 +90,13 @@ export const emailChallenges = pgTable(
     id: text("id").primaryKey(),
     purpose: text("purpose", { enum: ["signin", "verify"] }).notNull(),
     reason: text("reason", { enum: ["register", "verify_email", "login"] }).notNull(),
+    method: text("method", { enum: ["code", "link"] }).notNull().default("code"),
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     email: text("email").notNull(),
     codeHash: text("code_hash").notNull(),
+    approvedAt: ts("approved_at"),
     attempts: integer("attempts").notNull().default(0),
     sends: integer("sends").notNull().default(1),
     sentAt: ts("sent_at").notNull(),

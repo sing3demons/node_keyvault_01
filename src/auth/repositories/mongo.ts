@@ -235,6 +235,8 @@ export class MongoAuthRepository implements AuthRepository {
       );
       return doc ? doc.attempts : null;
     },
+    approve: async (id: string, at: Date) =>
+      (await this.emailChallenges$.updateOne({ _id: id }, { $set: { approvedAt: at } })).matchedCount > 0,
     replaceCode: async (id: string, codeHash: string, sentAt: Date, expiresAt: Date) => {
       await this.emailChallenges$.updateOne(
         { _id: id },

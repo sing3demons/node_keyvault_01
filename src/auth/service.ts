@@ -11,6 +11,8 @@ import type { EmailCodeService, PendingVerification } from "./email-codes.js";
 import {
   displayProfile,
   isPassword,
+  type EmailChallenge,
+  type EmailChallengeReason,
   type LocalizedProfile,
   type Role,
   type SignInMethod,
@@ -219,6 +221,37 @@ export class AuthService implements TokenAuthenticator {
     if (requestId !== undefined) await this.assertAuthRequest(requestId);
     const challenge = await this.emailCodes.check(challengeId, code, requestId);
     await this.repo.users.markEmailVerified(challenge.userId, challenge.email, new Date());
+    return this.finishChallenge(challenge, requestId, device);
+  }
+
+  /**
+   * Verification link opened (any browser or device). Proves the mailbox, so the address is marked verified
+   * now; a sign-in is finished by the page that started it, which polls emailChallengeStatus().
+   */
+  async approveEmailLink(challengeId: string, token: string): Promise<{ approved: true; reason: EmailChallengeReason; signIn: boolean }> {
+    const challenge = await this.emailCodes.approveLink(challengeId, token);
+    await this.repo.users.markEmailVerified(challenge.userId, challenge.email, new Date());
+    return { approved: true, reason: challenge.reason, signIn: challenge.purpose === "signin" };
+  }
+
+  /** Polled by the page waiting for its link to be opened: `{ pending: true }` until then. */
+  async emailChallengeStatus(
+    challengeId: string,
+    requestId?: string,
+    device?: DeviceContext
+  ): Promise<{ pending: true } | { redirect: string } | { verified: true }> {
+    if (requestId !== undefined) await this.assertAuthRequest(requestId);
+    const challenge = await this.emailCodes.poll(challengeId, requestId);
+    if (!challenge) return { pending: true };
+    return this.finishChallenge(challenge, requestId, device);
+  }
+
+  /** A confirmed challenge: "verify" is done; "signin" completes its authorization request. */
+  private async finishChallenge(
+    challenge: EmailChallenge,
+    requestId?: string,
+    device?: DeviceContext
+  ): Promise<{ redirect: string } | { verified: true }> {
     if (challenge.purpose === "verify") return { verified: true };
     if (requestId === undefined || !device) throw new HttpError(400, "request_id is required for this code");
     return this.completeAuthRequest(requestId, challenge.userId, {

@@ -1,6 +1,8 @@
 import { useEffect, useState, type FormEvent } from "react";
 import {
+  approveEmailLink,
   confirmSignInCode,
+  emailChallengeStatus,
   handleCallback,
   loginWithPasskey,
   loginWithPassword,
@@ -124,9 +126,18 @@ export function LoginPage() {
               const { redirect } = await confirmSignInCode(requestId, verify.challengeId, code);
               location.assign(redirect);
             } catch (e) {
-              if (/expired or not found — please start sign-in again/i.test((e as Error).message)) {
-                setTimeout(() => startLogin(), 1200);
-              }
+              restartIfRequestExpired(e);
+              throw e;
+            }
+          }}
+          onPoll={async () => {
+            try {
+              const status = await emailChallengeStatus(verify.challengeId, requestId);
+              if (!("redirect" in status)) return false;
+              location.assign(status.redirect);
+              return true;
+            } catch (e) {
+              restartIfRequestExpired(e);
               throw e;
             }
           }}
@@ -236,6 +247,73 @@ export function LoginPage() {
           </>
         )}
       </form>
+    </Shell>
+  );
+}
+
+/** The authorization request is gone (10 min) — start a fresh sign-in. */
+function restartIfRequestExpired(e: unknown) {
+  if (/expired or not found — please start sign-in again/i.test((e as Error).message)) {
+    setTimeout(() => startLogin(), 1200);
+  }
+}
+
+/**
+ * /verify-email?id=…&token=… — opened from the emailed link (EMAIL_VERIFICATION=link). Needs a click so mail
+ * scanners that prefetch links cannot approve a sign-in on their own.
+ */
+export function VerifyEmailPage() {
+  const q = new URLSearchParams(location.search);
+  const id = q.get("id");
+  const token = q.get("token");
+  const [state, setState] = useState<"ready" | "busy" | "error" | { signIn: boolean }>("ready");
+  const [error, setError] = useState("");
+
+  const confirm = async () => {
+    if (!id || !token) return;
+    setState("busy");
+    try {
+      const r = await approveEmailLink(id, token);
+      setState({ signIn: r.signIn });
+    } catch (e) {
+      setError((e as Error).message);
+      setState("error");
+    }
+  };
+
+  if (!id || !token) {
+    return (
+      <Shell title="Invalid link" sub="Key Vault Secrets">
+        <div className="dlg-body">
+          <p>This link is incomplete. Open it straight from the email, or request a new one.</p>
+        </div>
+      </Shell>
+    );
+  }
+
+  if (typeof state === "object") {
+    return (
+      <Shell title={state.signIn ? "Sign-in approved" : "Email verified"} sub="Key Vault Secrets">
+        <div className="dlg-body">
+          <p>
+            {state.signIn
+              ? "Your email is confirmed. Go back to the window where you were signing in — it continues automatically. You can close this tab."
+              : "Your email address is confirmed. You can close this tab."}
+          </p>
+        </div>
+      </Shell>
+    );
+  }
+
+  return (
+    <Shell title="Confirm your email" sub="Key Vault Secrets">
+      <div className="dlg-body">
+        <p>Confirm that this email address is yours.</p>
+        <div className="error-text">{error}</div>
+        <button className="btn-primary auth-submit" onClick={confirm} disabled={state === "busy"}>
+          {state === "busy" ? "Confirming…" : "Confirm"}
+        </button>
+      </div>
     </Shell>
   );
 }

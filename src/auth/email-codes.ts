@@ -1,15 +1,23 @@
-// One-time codes sent by email: proving an address (registration, account page) and the extra
+// One-time codes or links sent by email: proving an address (registration, account page) and the extra
 // sign-in step when someone signs in with their email address.
+//
+// EMAIL_VERIFICATION=code — the email holds a 6-digit code, typed into the page that asked for it (check()).
+// EMAIL_VERIFICATION=link — the email holds a link with a 256-bit token. Opening it (in any browser, even
+//   on another device) approves the challenge (approveLink()); the page that asked keeps polling (poll())
+//   and finishes there, because only it holds the OAuth state (PKCE verifier) for the sign-in.
 
 import { randomInt, timingSafeEqual } from "node:crypto";
 import { randomToken, sha256 } from "../shared/crypto.js";
 import { HttpError } from "../shared/http.js";
 import type { Mailer } from "../shared/mail.js";
 import { errorMessage, expiresIn } from "../shared/util.js";
-import type { EmailChallenge, EmailChallengePurpose, EmailChallengeReason } from "./model.js";
+import type { EmailChallenge, EmailChallengePurpose, EmailChallengeReason, EmailVerificationMethod } from "./model.js";
 import type { AuthRepository } from "./repository.js";
 
 export interface EmailCodeSettings {
+  method: EmailVerificationMethod;
+  /** UI origin the links point to: <linkBaseUrl>/verify-email?id=…&token=… */
+  linkBaseUrl: string;
   ttlSec: number;
   /** Wrong codes allowed before the challenge is thrown away. */
   maxAttempts: number;
@@ -26,6 +34,8 @@ export interface PendingVerification {
   /** Masked, e.g. "s•••s@example.com". */
   email: string;
   reason: EmailChallengeReason;
+  /** "code": ask for the 6 digits; "link": tell the user to open the email and poll the status. */
+  method: EmailVerificationMethod;
   expiresAt: string;
   /** Earliest time a resend is accepted. */
   resendAt: string;
@@ -58,12 +68,14 @@ export class EmailCodeService {
     authRequestId?: string;
   }): Promise<PendingVerification> {
     const id = randomToken(24);
-    const code = this.newCode();
+    const method = this.settings.method;
+    const code = this.newSecret(method);
     const now = new Date();
     const challenge: EmailChallenge = {
       id,
       purpose: p.purpose,
       reason: p.reason,
+      method,
       userId: p.userId,
       email: p.email,
       codeHash: this.hash(id, code),
@@ -88,7 +100,7 @@ export class EmailCodeService {
     if (stored.sends >= this.settings.maxSends) {
       throw new HttpError(429, "Too many codes requested — please start again", "slow_down");
     }
-    const code = this.newCode();
+    const code = this.newSecret(this.methodOf(stored));
     const next: EmailChallenge = {
       ...stored,
       codeHash: this.hash(stored.id, code),
@@ -109,23 +121,67 @@ export class EmailCodeService {
   async check(challengeId: string, code: string, authRequestId?: string): Promise<EmailChallenge> {
     const stored = await this.repo.emailChallenges.findActive(challengeId, new Date());
     if (!stored || (stored.authRequestId ?? null) !== (authRequestId ?? null)) throw this.gone();
-    if (!this.matches(stored, code)) {
-      const attempts = await this.repo.emailChallenges.recordFailedAttempt(stored.id);
-      const left = this.settings.maxAttempts - (attempts ?? this.settings.maxAttempts);
-      if (left <= 0) {
-        await this.repo.emailChallenges.consume(stored.id);
-        throw new HttpError(400, "Too many wrong codes — please start again", "invalid_code");
-      }
-      throw new HttpError(400, `Wrong code — ${left} attempt${left === 1 ? "" : "s"} left`, "invalid_code");
-    }
+    if (this.methodOf(stored) !== "code") throw new HttpError(400, "Open the link in the email instead", "invalid_code");
+    await this.verifySecret(stored, code);
     // single use: of two concurrent correct submissions only one gets through
+    if (!(await this.repo.emailChallenges.consume(stored.id))) throw this.gone();
+    return stored;
+  }
+
+  /**
+   * Link opened and confirmed (the person proved they can read the mailbox). Nothing is signed in here:
+   * the challenge is only marked approved, for the requesting page to pick up with poll().
+   */
+  async approveLink(challengeId: string, token: string): Promise<EmailChallenge> {
+    const stored = await this.repo.emailChallenges.findActive(challengeId, new Date());
+    if (!stored || this.methodOf(stored) !== "link") throw this.gone();
+    if (stored.approvedAt) return stored; // opened twice: already done
+    await this.verifySecret(stored, token);
+    if (!(await this.repo.emailChallenges.approve(stored.id, new Date()))) throw this.gone();
+    return { ...stored, approvedAt: new Date() };
+  }
+
+  /**
+   * The requesting page asks whether the link was opened. Returns null while waiting; once approved the
+   * challenge is consumed (single use) and returned. `authRequestId` must match, as in check().
+   */
+  async poll(challengeId: string, authRequestId?: string): Promise<EmailChallenge | null> {
+    const stored = await this.repo.emailChallenges.findActive(challengeId, new Date());
+    if (!stored || (stored.authRequestId ?? null) !== (authRequestId ?? null)) throw this.gone();
+    if (!stored.approvedAt) return null;
     if (!(await this.repo.emailChallenges.consume(stored.id))) throw this.gone();
     return stored;
   }
 
   // ---------------------------------------------------------------- helpers
 
-  private newCode(): string {
+  /** Wrong secrets count against the challenge; too many and it is thrown away. */
+  private async verifySecret(stored: EmailChallenge, secret: string): Promise<void> {
+    if (!this.matches(stored, secret)) {
+      const attempts = await this.repo.emailChallenges.recordFailedAttempt(stored.id);
+      const left = this.settings.maxAttempts - (attempts ?? this.settings.maxAttempts);
+      if (left <= 0) {
+        await this.repo.emailChallenges.consume(stored.id);
+        throw new HttpError(400, "Too many wrong codes — please start again", "invalid_code");
+      }
+      throw new HttpError(
+        400,
+        this.methodOf(stored) === "link"
+          ? "This link is invalid or was replaced by a newer email"
+          : `Wrong code — ${left} attempt${left === 1 ? "" : "s"} left`,
+        "invalid_code"
+      );
+    }
+  }
+
+  /** Challenges stored before links existed have no method. */
+  private methodOf(c: EmailChallenge): EmailVerificationMethod {
+    return c.method ?? "code";
+  }
+
+  /** 6 digits to type, or a 256-bit token for a link. */
+  private newSecret(method: EmailVerificationMethod): string {
+    if (method === "link") return randomToken();
     return randomInt(0, 10 ** CODE_DIGITS)
       .toString()
       .padStart(CODE_DIGITS, "0");
@@ -151,6 +207,7 @@ export class EmailCodeService {
       challengeId: c.id,
       email: maskEmail(c.email),
       reason: c.reason,
+      method: this.methodOf(c),
       expiresAt: c.expiresAt.toISOString(),
       resendAt: this.resendAt(c).toISOString()
     };
@@ -160,31 +217,40 @@ export class EmailCodeService {
     return new HttpError(400, "Code expired or not found — please request a new one", "expired_code");
   }
 
-  /** Sends the code. If the very first send fails the challenge is removed, since nobody can complete it. */
-  private async deliver(c: EmailChallenge, code: string, first: boolean): Promise<void> {
+  /** Sends the code / link. If the very first send fails the challenge is removed, since nobody can complete it. */
+  private async deliver(c: EmailChallenge, secret: string, first: boolean): Promise<void> {
     const { appName, ttlSec } = this.settings;
     const minutes = Math.round(ttlSec / 60);
+    const expires = `It expires in ${minutes} minute${minutes === 1 ? "" : "s"}.`;
     const action = {
       register: "confirm your email address and finish creating your account",
       verify_email: "confirm your email address",
       login: "finish signing in"
     }[c.reason];
-    const subject = c.reason === "login" ? `${appName} sign-in code: ${code}` : `${appName} verification code: ${code}`;
-    const text = [
-      `Your ${appName} code is: ${code}`,
-      "",
-      `Enter it to ${action}. It expires in ${minutes} minute${minutes === 1 ? "" : "s"}.`,
-      "",
+    const ignore =
       "If you did not request this, you can ignore this email" +
-        (c.reason === "login" ? " — but someone knows your password, so please change it." : ".")
-    ].join("\n");
-    const html =
-      `<p>Your ${escapeHtml(appName)} code is:</p>` +
-      `<p style="font-size:28px;font-weight:700;letter-spacing:6px;font-family:monospace">${code}</p>` +
-      `<p>Enter it to ${action}. It expires in ${minutes} minute${minutes === 1 ? "" : "s"}.</p>` +
-      `<p style="color:#666">If you did not request this, you can ignore this email` +
-      (c.reason === "login" ? " — but someone knows your password, so please change it." : ".") +
-      `</p>`;
+      (c.reason === "login" ? " — but someone knows your password, so please change it." : ".");
+    const name = escapeHtml(appName);
+    let subject: string, text: string, html: string;
+    if (this.methodOf(c) === "link") {
+      const url = `${this.settings.linkBaseUrl}/verify-email?${new URLSearchParams({ id: c.id, token: secret })}`;
+      subject = c.reason === "login" ? `Sign in to ${appName}` : `Confirm your email for ${appName}`;
+      text = [`Open this link to ${action}:`, "", url, "", expires, "", ignore].join("\n");
+      html =
+        `<p>Open this link to ${action}:</p>` +
+        `<p><a href="${escapeHtml(url)}" style="display:inline-block;padding:10px 18px;border-radius:8px;` +
+        `background:#4f46e5;color:#fff;text-decoration:none;font-weight:600">` +
+        `${c.reason === "login" ? "Sign in" : "Confirm email"}</a></p>` +
+        `<p style="color:#666;font-size:13px">Or paste this address into your browser:<br>${escapeHtml(url)}</p>` +
+        `<p>${expires}</p><p style="color:#666">${ignore}</p>`;
+    } else {
+      subject = c.reason === "login" ? `${appName} sign-in code: ${secret}` : `${appName} verification code: ${secret}`;
+      text = [`Your ${appName} code is: ${secret}`, "", `Enter it to ${action}. ${expires}`, "", ignore].join("\n");
+      html =
+        `<p>Your ${name} code is:</p>` +
+        `<p style="font-size:28px;font-weight:700;letter-spacing:6px;font-family:monospace">${secret}</p>` +
+        `<p>Enter it to ${action}. ${expires}</p><p style="color:#666">${ignore}</p>`;
+    }
     try {
       await this.mailer.send({ to: c.email, subject, text, html });
     } catch (error) {

@@ -41,6 +41,10 @@ class Config {
   };
 
   emailCodes: {
+    /** How emails prove the address: a 6-digit code to type, or a link to open. */
+    method: "code" | "link";
+    /** Base URL of the UI that verification links point to (…/verify-email). */
+    linkBaseUrl: string;
     ttlSec: number;
     maxAttempts: number;
     resendCooldownSec: number;
@@ -102,7 +106,14 @@ class Config {
       from: process.env.MAIL_FROM ?? `${this.webauthn.rpName} <no-reply@localhost>`
     };
 
+    const method = (process.env.EMAIL_VERIFICATION ?? "code").toLowerCase();
+    if (method !== "code" && method !== "link") {
+      throw new Error(`EMAIL_VERIFICATION must be "code" or "link", got "${method}"`);
+    }
     this.emailCodes = {
+      method,
+      // default: the origin the UI runs on (first OAuth redirect URI)
+      linkBaseUrl: (process.env.APP_URL ?? new URL(this.oauth.redirectUris[0] ?? `http://localhost:${this.port}`).origin).replace(/\/+$/, ""),
       ttlSec: Number(process.env.EMAIL_CODE_TTL ?? 600),
       maxAttempts: Number(process.env.EMAIL_CODE_MAX_ATTEMPTS ?? 5),
       resendCooldownSec: Number(process.env.EMAIL_CODE_RESEND_COOLDOWN ?? 30),
