@@ -25,7 +25,6 @@ export interface OidcSettings {
   keysSyncSec: number;
   /** Issuer identifier: an https URL in production, e.g. https://auth.example.com */
   issuer: string;
-  idTokenTtlSec: number;
   /** Rotate when the active key is older than this. */
   keyRotationDays: number;
   /** How long a retired key stays in the JWKS (must exceed ID Token lifetime + client JWKS caching). */
@@ -202,13 +201,15 @@ export interface IdTokenInput {
   nonce?: string;
   /** The access token issued alongside, for at_hash. */
   accessToken: string;
+  /** Lifetime (the client's id_token_lifetime). */
+  ttlSec: number;
   /** Extra claims allowed by the granted scopes (profile, email, ...). */
   claims: Record<string, string | boolean>;
 }
 
 export class IdTokenIssuer {
   constructor(
-    private readonly settings: Pick<OidcSettings, "issuer" | "idTokenTtlSec">,
+    private readonly settings: Pick<OidcSettings, "issuer">,
     private readonly keys: SigningKeyRing
   ) {}
 
@@ -234,7 +235,7 @@ export class IdTokenIssuer {
       .setSubject(input.subject)
       .setAudience(input.audience)
       .setIssuedAt()
-      .setExpirationTime(`${this.settings.idTokenTtlSec}s`)
+      .setExpirationTime(`${input.ttlSec}s`)
       .sign(privateKey);
   }
 
@@ -253,7 +254,8 @@ export class IdTokenIssuer {
       subject_types_supported: ["public"],
       id_token_signing_alg_values_supported: [ALG],
       scopes_supported: [...OIDC_SCOPES, ...apiScopes],
-      token_endpoint_auth_methods_supported: ["none"],
+      token_endpoint_auth_methods_supported: ["none", "client_secret_basic", "client_secret_post"],
+      revocation_endpoint_auth_methods_supported: ["none", "client_secret_basic", "client_secret_post"],
       code_challenge_methods_supported: ["S256"],
       claims_supported: [
         "sub", "iss", "aud", "exp", "iat", "auth_time", "nonce", "at_hash",

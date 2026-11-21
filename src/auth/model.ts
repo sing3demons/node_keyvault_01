@@ -178,6 +178,8 @@ export interface EmailChallenge {
   userId: string;
   /** Address the code went to; it is marked verified only if the user still has this address. */
   email: string;
+  /** OAuth client the user was signing in to (sign-in challenges): where an emailed link continues. */
+  clientId?: string;
   /** sha256 of the code (method "code") or link token (method "link"). */
   codeHash: string;
   /** Link opened and confirmed; waiting for the requesting page to pick it up (method "link"). */
@@ -229,4 +231,46 @@ export interface DeviceSignIn {
   ip?: string;
   at: Date;
   method: SignInMethod;
+}
+
+// ---------------------------------------------------------------- OAuth clients
+
+/** RFC 7591 §2 token_endpoint_auth_method: "none" = public client (PKCE only), else confidential. */
+export const TOKEN_ENDPOINT_AUTH_METHODS = ["none", "client_secret_basic", "client_secret_post"] as const;
+export type TokenEndpointAuthMethod = (typeof TOKEN_ENDPOINT_AUTH_METHODS)[number];
+
+export const CLIENT_GRANT_TYPES = ["authorization_code", "refresh_token"] as const;
+export type ClientGrantType = (typeof CLIENT_GRANT_TYPES)[number];
+
+/**
+ * A registered OAuth 2.0 / OpenID Connect client (RFC 6749 §2, RFC 7591 metadata), plus per-client
+ * settings that used to be server-wide env vars (token lifetimes, how emails verify the user).
+ */
+export interface OAuthClient {
+  /** client_id */
+  id: string;
+  /** client_name — also shown in emails sent for this client. */
+  name: string;
+  tokenEndpointAuthMethod: TokenEndpointAuthMethod;
+  /** sha256 of the client_secret (confidential clients only; the secret is shown once). */
+  secretHash?: string;
+  /** Exact-match list (RFC 6749 §3.1.2.2); https, or http on loopback for development. */
+  redirectUris: string[];
+  grantTypes: ClientGrantType[];
+  /** Space-separated scopes the client may request; also the default when a request names none. */
+  scope: string;
+  /** client_uri: home page of the client. */
+  clientUri?: string;
+  /**
+   * OIDC initiate_login_uri (Third-Party Initiated Login, OIDC Core §4): where an emailed sign-in link sends
+   * the browser so the client starts a fresh authorization request and the user ends up signed in there.
+   */
+  initiateLoginUri?: string;
+  accessTokenTtlSec: number;
+  refreshTokenTtlSec: number;
+  idTokenTtlSec: number;
+  /** How emails sent for this client verify the user: 6-digit code or link. */
+  emailVerification: EmailVerificationMethod;
+  createdAt: Date;
+  updatedAt: Date;
 }

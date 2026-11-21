@@ -97,14 +97,26 @@ type Credential =
 - password ที่ `algorithm` ไม่ใช่ argon2id (เช่น import มาจากระบบอื่น) จะถูก verify แล้ว upgrade เป็น argon2id ตอน login — เพิ่มตัว verify ได้ที่ [src/shared/hashing.ts](src/shared/hashing.ts)
 - ลบ credential สุดท้ายของ user ไม่ได้
 
-**ยืนยัน email (รหัส 6 หลัก หรือ link)**
+**OAuth clients** (เก็บใน DB — จัดการโดย admin ที่ปุ่ม "Clients" หรือ `/admin/clients`)
 
-- เลือกวิธีด้วย `EMAIL_VERIFICATION`:
-  - `code` (default) — ส่งรหัส 6 หลัก ให้กรอกในหน้าที่ขอ
-  - `link` — ส่ง link `<APP_URL>/verify-email?id=…&token=…` (token 256-bit, ใช้ได้ครั้งเดียว) ต้องกดปุ่มในหน้านั้นก่อน (กัน mail scanner เปิด link เอง)
-    - link สำหรับ login (สมัคร / login ด้วย email มี `&signin=1`): กดแล้ว **login ใน browser ที่เปิด link เลย** — แท็บนั้นเริ่ม `/oauth/authorize` ของตัวเอง (PKCE ใหม่) แล้วหน้า login แลก link กับ `request_id` ใหม่ → redirect `/callback?code=…` → ได้ token; อุปกรณ์ที่บันทึกคือ browser ที่เปิด link
-    - link ยืนยัน email จากหน้า Account: กดแล้วยืนยันเฉยๆ ไม่ login; dialog ที่เปิดค้างไว้รู้เองจาก poll `POST /auth/email/status`
-  - `APP_URL` ไม่ตั้ง = ใช้ origin ของ `OAUTH_REDIRECT_URIS` ตัวแรก; challenge ที่ส่งไปแล้วใช้วิธีเดิมต่อแม้เปลี่ยน config
+- metadata ตาม RFC 7591: `client_id`, `client_name`, `redirect_uris` (ตรงทุกตัวอักษร; https, http เฉพาะ localhost, หรือ private-use scheme แบบ `com.example.app:/cb` ตาม RFC 8252), `token_endpoint_auth_method`, `grant_types`, `scope`, `client_uri`, `initiate_login_uri` (OIDC)
+- ชนิด client: `none` = public (SPA / mobile, ใช้ PKCE อย่างเดียว) · `client_secret_basic` (default ตาม RFC 7591) / `client_secret_post` = confidential — secret แสดงครั้งเดียวตอนสร้าง/rotate, DB เก็บแค่ SHA-256
+- ตั้งค่าต่อ client (แทน env เดิม): `access_token_lifetime`, `refresh_token_lifetime`, `id_token_lifetime` (ไม่เกิน `OIDC_RETIRED_KEY_GRACE_SEC`), `email_verification` (`code` | `link`); refresh token ออกให้เฉพาะ client ที่มี grant `refresh_token`; scope ที่ขอต้องอยู่ใน `scope` ของ client (ไม่ส่ง scope = ใช้ของ client)
+- `/oauth/token` และ `/oauth/revoke` ต้องยืนยันตัว client ตามวิธีที่ลงทะเบียน (RFC 6749 §2.3, RFC 7009); revoke ได้เฉพาะ token ของตัวเอง
+- ลบ client = revoke token ของมันทั้งหมด (RFC 7592); ลบ client ที่ตัวเอง login อยู่ไม่ได้
+- **Master credential** — `MASTER_CREDENTIALS` = base64(`username:password`) (password ≥ 16 ตัว) ใช้จัดการ client ได้โดยไม่ต้องมี user admin: เปิดหน้า `/manage` แล้ว login ด้วย username/password นั้น หรือเรียก API ด้วย `Authorization: Basic $MASTER_CREDENTIALS`; จัดการได้เฉพาะ `/admin/clients` (ไม่รวม users / secrets); ไม่ตั้ง = ปิด, ค่าผิดรูปแบบ = server ไม่ start
+  ```bash
+  printf 'master:%s' "$(openssl rand -base64 24)" | base64   # ใส่ใน MASTER_CREDENTIALS
+  curl -H "Authorization: Basic $MASTER_CREDENTIALS" http://localhost:3000/admin/clients
+  ```
+- start ครั้งแรกสร้าง client `keyvault-web` (public) ของ UI ให้เอง: redirect `<WEBAUTHN_ORIGINS>/callback`, `initiate_login_uri` = origin แรก — env เก่า (`OAUTH_CLIENT_ID`, `OAUTH_REDIRECT_URIS`, `ACCESS_TOKEN_TTL`, `REFRESH_TOKEN_TTL`, `ID_TOKEN_TTL`, `EMAIL_VERIFICATION`) ยังถูกอ่านเป็นค่าตั้งต้นครั้งนั้นครั้งเดียว หลังจากนั้นแก้ใน Clients
+
+**ยืนยัน email (รหัส 6 หลัก หรือ link — ตั้งที่ client)**
+
+- `email_verification` ของ client ที่ user กำลัง login เข้า: `code` — รหัส 6 หลัก · `link` — link `<origin ของหน้า login>/verify-email?id=…&token=…` (token 256-bit, ใช้ครั้งเดียว; origin ต้องอยู่ใน `WEBAUTHN_ORIGINS`) ต้องกดปุ่มในหน้านั้นก่อน (กัน mail scanner); ชื่อใน email = `client_name`
+  - link สำหรับ login (`&signin=1`): **login ใน browser ที่เปิด link** — server เก็บ link ไว้ใน cookie แล้วส่ง browser ไป `initiate_login_uri` ของ client (OIDC Third-Party Initiated Login) → client เริ่ม `/oauth/authorize` ใหม่ (PKCE/state ของมันเอง) → หน้า login เรียก `POST /auth/email/link/resume` → redirect กลับ client พร้อม code; ถ้า client ไม่มี `initiate_login_uri` จะจบ request เดิมแทน (เหมาะกับ client ฝั่ง server ที่เก็บ state ใน cookie); link ใช้กับ client อื่นไม่ได้
+  - link ยืนยัน email จากหน้า Account: ยืนยันเฉยๆ ไม่ login; dialog ที่เปิดค้างรู้เองจาก poll `POST /auth/email/status`
+  - challenge ที่ส่งไปแล้วใช้วิธีเดิมต่อแม้เปลี่ยนค่า client
 
 - สมัครสมาชิก → ส่งรหัสไปที่ email → กรอกรหัสในหน้า login แล้วเข้าระบบเลย (`Account.emailVerified`, claim `email_verified`)
 - login ด้วย **email + password** → ต้องกรอกรหัสที่ส่งไป email ทุกครั้ง; login ด้วย **username + password** → ไม่ต้อง ยกเว้น email ยังไม่ได้ยืนยัน (เช่น บัญชีเก่า) จะให้ยืนยันก่อน
@@ -124,7 +136,7 @@ type Credential =
 แก้ schema Postgres ที่ `src/auth/repositories/drizzle/schema.ts` แล้วรัน `pnpm db:generate` เพื่อสร้าง migration ใหม่ (`pnpm db:studio` เปิด Drizzle Studio)
 
 
-- **OAuth2 Authorization Code + PKCE (S256)** — React UI เป็น public client `keyvault-web`
+- **OAuth2 Authorization Code + PKCE (S256)** — ทุก client ต้องใช้ PKCE; React UI เป็น public client `keyvault-web`
 - **Password** — hash ด้วย argon2id
 - **Passkey (WebAuthn)** — ใช้ fido2-lib แบบ discoverable credential (sign-in โดยไม่ต้องพิมพ์ username)
 - **Token แบบ opaque** — access token (15 นาที) + refresh token (30 วัน, rotation + reuse detection) เก็บใน Mongo เป็น SHA-256 hash เท่านั้น
@@ -133,8 +145,8 @@ Flow: UI → `GET /oauth/authorize` → redirect ไป `/login?request_id=…` 
 
 เพิ่ม passkey ได้จากปุ่ม "Add passkey" หลัง login (ทดสอบบน Chrome ได้ด้วย DevTools → More tools → WebAuthn → virtual authenticator)
 
-ตั้งค่าใน `.env`: `MONGO_URL`, `MONGO_DB`, `WEBAUTHN_RP_ID`, `WEBAUTHN_ORIGINS`, `OAUTH_CLIENT_ID`, `OAUTH_REDIRECT_URIS`, `ACCESS_TOKEN_TTL`, `REFRESH_TOKEN_TTL` (ดู `.env.example`)
-— `WEBAUTHN_ORIGINS` และ `OAUTH_REDIRECT_URIS` ต้องตรงกับ origin ที่เปิด UI จริง (dev: `:5173`, build: port ของ API)
+ตั้งค่าใน `.env` (เฉพาะของทั้ง server): `MONGO_URL`, `MONGO_DB`, `WEBAUTHN_RP_ID`, `WEBAUTHN_ORIGINS`, `OIDC_ISSUER`, `SMTP_URL`, … (ดู `.env.example`) — ค่าของแต่ละแอปอยู่ที่ client
+— `WEBAUTHN_ORIGINS` ต้องตรงกับ origin ที่เปิดหน้า login จริง (dev: `:5173`, build: port ของ API)
 
 ## Endpoint
 
@@ -144,7 +156,7 @@ Flow: UI → `GET /oauth/authorize` → redirect ไป `/login?request_id=…` 
 - `POST /auth/register` (`username`, `email`, `password`, `profiles`, `preferredLang?`, `request_id?`) → account + `verification` (ส่งรหัสไป email แล้ว)
 - `POST /auth/login/password` (`username` = username หรือ email) → `{ redirect }` หรือ `{ verify }` (ต้องกรอกรหัสจาก email ต่อ)
 - `POST /auth/email/verify` (`challengeId`, `code`, `request_id?`) → `{ redirect }` (ขั้น login) หรือ `{ verified: true }` · `POST /auth/email/resend` (`challengeId`)
-- `EMAIL_VERIFICATION=link`: `POST /auth/email/link` (`challengeId`, `token` จาก link, `request_id` ของแท็บที่เปิด link — ต้องมีสำหรับ link login) → `{ redirect }` / `{ verified }` · `POST /auth/email/status` (`challengeId`, link ยืนยันจาก Account) → `{ pending }` / `{ verified }`
+- client แบบ link: `POST /auth/email/link` (`challengeId`, `token`, `request_id?`) → `{ verified }` / `{ continue }` (+ cookie) / `{ redirect }` · `POST /auth/email/link/resume` (`request_id`) → `{ redirect }` · `POST /auth/email/status` (`challengeId`) → `{ pending }` / `{ verified }`
 - `GET /auth/me` · `PATCH /auth/me` · `POST /auth/me/email/verification` (Bearer)
 - `GET /auth/me/devices` · `POST /auth/me/devices/:id/sign-out` · `DELETE /auth/me/devices/:id` (Bearer)
 - `POST /auth/webauthn/login/options` · `POST /auth/webauthn/login/verify`
@@ -154,6 +166,15 @@ Admin (ต้องมี role `admin`):
 
 - admin กลุ่มแรกมาจาก `ADMIN_USERNAMES` ใน `.env` (ใช้ตอน start และตอน register)
 - `GET /admin/users` · `PUT /admin/users/:username/roles` body `{ "roles": ["admin"] }` — ถอด admin คนสุดท้ายไม่ได้; role ตรวจจาก DB ทุก request (ถอดแล้วมีผลทันที)
+- `GET/POST /admin/clients` · `GET/PUT/DELETE /admin/clients/:id` · `POST /admin/clients/:id/secret` (rotate) — body เป็น client metadata (RFC 7591), PUT ส่งครบทุก field (RFC 7592)
+
+```bash
+curl -X POST http://localhost:3000/admin/clients -H "Authorization: Bearer $ACCESS_TOKEN" -H "Content-Type: application/json" \
+  -d '{"client_name":"Billing","redirect_uris":["https://billing.example.com/cb"],"scope":"openid email",
+       "grant_types":["authorization_code","refresh_token"],"email_verification":"link",
+       "initiate_login_uri":"https://billing.example.com/login","access_token_lifetime":600}'
+# -> 201 { "client_id": "...", "client_secret": "...", "client_secret_expires_at": 0, ... }
+```
 
 Secrets (ต้องมี Bearer token) — ค่าเก็บใน Key Vault, เจ้าของ/สิทธิ์เก็บใน DB ของแอป (`secret_acls`):
 

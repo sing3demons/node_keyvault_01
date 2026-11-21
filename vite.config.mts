@@ -16,7 +16,9 @@ export default defineConfig({
       "/secrets": apiTarget,
       "/health": apiTarget,
       "/oauth": apiTarget,
-      "/auth": apiTarget
+      "/auth": apiTarget,
+      "/admin": apiTarget,
+      "/.well-known": apiTarget
     }
   }
 });

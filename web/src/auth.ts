@@ -10,8 +10,7 @@ const K = {
   state: "oauth.state",
   nonce: "oauth.nonce",
   returnTo: "oauth.return_to",
-  tokens: "oauth.tokens",
-  emailLink: "auth.email_link"
+  tokens: "oauth.tokens"
 };
 
 interface Tokens {
@@ -345,36 +344,21 @@ export const emailChallengeStatus = (challengeId: string) =>
   postJson<{ pending: true } | { verified: true }>("/auth/email/status", { challengeId });
 
 /**
- * Redeem an emailed link. With `requestId` (a sign-in this tab started) a sign-in link returns { redirect }
- * to /callback, so this tab gets the tokens; a verify-only link returns { verified }.
+ * Redeem an emailed link (page /verify-email):
+ * - { verified }: a verify-only link, done;
+ * - { continue }: a sign-in link — go there (the app's initiate_login_uri); the app starts a fresh sign-in and
+ *   the login page finishes it with the link the server kept in a cookie (resumeEmailLink);
+ * - { redirect }: signed in straight away (apps without initiate_login_uri).
  */
-export const openEmailLink = (challengeId: string, token: string, requestId?: string) =>
-  postJson<{ redirect: string } | { verified: true }>("/auth/email/link", {
-    challengeId,
-    token,
-    ...(requestId ? { request_id: requestId } : {})
-  });
+export const openEmailLink = (challengeId: string, token: string) =>
+  postJson<{ redirect: string } | { verified: true } | { continue: string }>("/auth/email/link", { challengeId, token });
 
-/**
- * A sign-in link was opened in this tab: keep it while the tab runs its own OAuth request (fresh PKCE),
- * which the login page then completes with the link (takeEmailLink). Per tab, removed when read.
- */
-export function signInWithEmailLink(challengeId: string, token: string): Promise<never> {
-  store.set(K.emailLink, JSON.stringify({ challengeId, token }));
-  return startLogin();
-}
+/** An opened sign-in link is waiting for this browser's next sign-in (flag cookie set by the server). */
+export const emailLinkPending = () => typeof document !== "undefined" && /(?:^|;\s*)kv_email_link_pending=1/.test(document.cookie);
 
-/** Reads the link stashed by signInWithEmailLink (no side effects — safe in render). */
-export function peekEmailLink(): { challengeId: string; token: string } | null {
-  const raw = store.get(K.emailLink);
-  try {
-    return raw ? (JSON.parse(raw) as { challengeId: string; token: string }) : null;
-  } catch {
-    return null;
-  }
-}
-
-export const clearEmailLink = () => store.del(K.emailLink);
+/** Login page: finish the sign-in with the waiting link -> { redirect } to the app's callback. */
+export const resumeEmailLink = (requestId: string) =>
+  postJson<{ redirect: string }>("/auth/email/link/resume", { request_id: requestId });
 
 export const resendEmailCode = (challengeId: string) => postJson<PendingVerification>("/auth/email/resend", { challengeId });
 

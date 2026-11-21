@@ -1,4 +1,5 @@
 import dotenv from "dotenv";
+import { MasterCredential } from "./shared/middleware.js";
 
 dotenv.config();
 
@@ -27,11 +28,22 @@ class Config {
     origins: string[];
   };
 
-  oauth: {
-    clientId: string;
+  /**
+   * OAuth clients live in the database (UI: Clients, API: /admin/clients). Only the built-in client the
+   * React UI uses is created from these values, on first start; afterwards it is edited like any other.
+   * The old env vars (OAUTH_CLIENT_ID, OAUTH_REDIRECT_URIS, ACCESS_TOKEN_TTL, REFRESH_TOKEN_TTL, ID_TOKEN_TTL,
+   * EMAIL_VERIFICATION) are still read here, so existing setups seed the same client they had.
+   */
+  defaultClient: {
+    id: string;
     redirectUris: string[];
+    emailVerification: "code" | "link";
+  };
+  /** Lifetimes for clients that do not set their own (and for the built-in client). */
+  clientDefaults: {
     accessTokenTtlSec: number;
     refreshTokenTtlSec: number;
+    idTokenTtlSec: number;
   };
 
   mail: {
@@ -41,15 +53,14 @@ class Config {
   };
 
   emailCodes: {
-    /** How emails prove the address: a 6-digit code to type, or a link to open. */
-    method: "code" | "link";
-    /** Base URL of the UI that verification links point to (…/verify-email). */
-    linkBaseUrl: string;
     ttlSec: number;
     maxAttempts: number;
     resendCooldownSec: number;
     maxSends: number;
   };
+
+  /** MASTER_CREDENTIALS = base64("username:password"): manages OAuth clients (UI /manage, or HTTP Basic). */
+  master: MasterCredential | null;
 
   /** Take the client IP from X-Forwarded-For (only behind a reverse proxy you control). */
   trustProxy: boolean;
@@ -59,7 +70,6 @@ class Config {
 
   oidc: {
     issuer: string;
-    idTokenTtlSec: number;
     /** Key Vault secret holding the signing key set (hidden from the /secrets API). */
     keysSecretName: string;
     keyRotationDays: number;
@@ -91,14 +101,19 @@ class Config {
       ])
     };
 
-    this.oauth = {
-      clientId: process.env.OAUTH_CLIENT_ID ?? "keyvault-web",
-      redirectUris: list(process.env.OAUTH_REDIRECT_URIS, [
-        "http://localhost:5173/callback",
-        `http://localhost:${this.port}/callback`
-      ]),
+    const method = (process.env.EMAIL_VERIFICATION ?? "code").toLowerCase();
+    if (method !== "code" && method !== "link") {
+      throw new Error(`EMAIL_VERIFICATION must be "code" or "link", got "${method}"`);
+    }
+    this.defaultClient = {
+      id: process.env.OAUTH_CLIENT_ID ?? "keyvault-web",
+      redirectUris: list(process.env.OAUTH_REDIRECT_URIS, this.webauthn.origins.map((o) => `${o}/callback`)),
+      emailVerification: method
+    };
+    this.clientDefaults = {
       accessTokenTtlSec: Number(process.env.ACCESS_TOKEN_TTL ?? 900),
-      refreshTokenTtlSec: Number(process.env.REFRESH_TOKEN_TTL ?? 60 * 60 * 24 * 30)
+      refreshTokenTtlSec: Number(process.env.REFRESH_TOKEN_TTL ?? 60 * 60 * 24 * 30),
+      idTokenTtlSec: Number(process.env.ID_TOKEN_TTL ?? 900)
     };
 
     this.mail = {
@@ -106,19 +121,14 @@ class Config {
       from: process.env.MAIL_FROM ?? `${this.webauthn.rpName} <no-reply@localhost>`
     };
 
-    const method = (process.env.EMAIL_VERIFICATION ?? "code").toLowerCase();
-    if (method !== "code" && method !== "link") {
-      throw new Error(`EMAIL_VERIFICATION must be "code" or "link", got "${method}"`);
-    }
     this.emailCodes = {
-      method,
-      // default: the origin the UI runs on (first OAuth redirect URI)
-      linkBaseUrl: (process.env.APP_URL ?? new URL(this.oauth.redirectUris[0] ?? `http://localhost:${this.port}`).origin).replace(/\/+$/, ""),
       ttlSec: Number(process.env.EMAIL_CODE_TTL ?? 600),
       maxAttempts: Number(process.env.EMAIL_CODE_MAX_ATTEMPTS ?? 5),
       resendCooldownSec: Number(process.env.EMAIL_CODE_RESEND_COOLDOWN ?? 30),
       maxSends: Number(process.env.EMAIL_CODE_MAX_SENDS ?? 5)
     };
+
+    this.master = MasterCredential.fromEnv("MASTER_CREDENTIALS", process.env.MASTER_CREDENTIALS);
 
     this.trustProxy = /^(1|true|yes)$/i.test(process.env.TRUST_PROXY ?? "");
 
@@ -126,7 +136,6 @@ class Config {
 
     this.oidc = {
       issuer: process.env.OIDC_ISSUER ?? `http://localhost:${this.port}`,
-      idTokenTtlSec: Number(process.env.ID_TOKEN_TTL ?? 900),
       keysSecretName: process.env.OIDC_KEYS_SECRET ?? "oidc-signing-keys",
       keyRotationDays: Number(process.env.OIDC_KEY_ROTATION_DAYS ?? 30),
       retiredKeyGraceSec: Number(process.env.OIDC_RETIRED_KEY_GRACE_SEC ?? 24 * 60 * 60),

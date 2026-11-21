@@ -623,3 +623,41 @@ select {
     animation-duration: 2.4s;
   }
 }
+
+/* ---------- OAuth clients ---------- */
+.secret-once {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: var(--success-soft);
+}
+.secret-once-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.secret-once-row code {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 13px;
+}
+.field-label {
+  font-weight: 500;
+  margin-bottom: 4px;
+}
+.check-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+}.manage-wrap {
+  max-width: 760px;
+}
+.manage-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 16px 0 12px;
+}

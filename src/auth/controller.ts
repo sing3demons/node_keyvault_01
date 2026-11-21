@@ -1,10 +1,16 @@
 import type { Context } from "hono";
 import { getConnInfo } from "@hono/node-server/conninfo";
-import { getCookie, setCookie } from "hono/cookie";
+import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { randomToken } from "../shared/crypto.js";
+import type { ClientCredentials, ClientService } from "./clients.js";
 import type { DeviceContext } from "./devices.js";
+import type { MailContext } from "./email-codes.js";
+import { OAuthError } from "./oauth.js";
 import {
   authorizeQuery,
+  clientIdParam,
+  clientMetadataBody,
+  emailLinkResumeBody,
   credentialIdParam,
   emailCodeBody,
   emailLinkBody,
@@ -30,12 +36,19 @@ import type { WebAuthnService } from "./webauthn.js";
 /** httpOnly cookie that recognizes a browser across sign-ins (value is random; only its hash is stored). */
 const DEVICE_COOKIE = "kv_device";
 const DEVICE_COOKIE_MAX_AGE = 400 * 24 * 60 * 60; // browsers cap cookie lifetime at 400 days
+/** An opened sign-in link waiting for the client's fresh authorization request (httpOnly, /auth only). */
+const EMAIL_LINK_COOKIE = "kv_email_link";
+/** Readable flag so the login page knows to ask for it (carries nothing secret). */
+const EMAIL_LINK_FLAG_COOKIE = "kv_email_link_pending";
 
 export class AuthController {
   constructor(
     private readonly auth: AuthService,
     private readonly webauthn: WebAuthnService,
     private readonly idTokens: IdTokenIssuer,
+    private readonly clients: ClientService,
+    /** Origins the login / account pages run on (WEBAUTHN_ORIGINS); emailed links open one of these. */
+    private readonly uiOrigins: string[],
     /** Read the client IP from X-Forwarded-For (TRUST_PROXY). */
     private readonly trustProxy = false
   ) {}
@@ -78,23 +91,25 @@ export class AuthController {
     c.header("Pragma", "no-cache");
     // OAuthError is an HttpError, so app.onError renders the RFC 6749 §5.2 body (headers above are kept)
     const req = parseTokenRequest(await c.req.parseBody());
-    const tokens =
+    const client = this.clientCredentials(c, req);
+    const tokens = await this.withClientChallenge(c, client, () =>
       req.grant_type === "authorization_code"
-        ? await this.auth.exchangeCode({
-            code: req.code,
-            redirectUri: req.redirect_uri,
-            clientId: req.client_id,
-            codeVerifier: req.code_verifier
-          })
-        : await this.auth.refresh({ refreshToken: req.refresh_token, clientId: req.client_id, scope: req.scope });
+        ? this.auth.exchangeCode({ code: req.code, redirectUri: req.redirect_uri, client, codeVerifier: req.code_verifier })
+        : this.auth.refresh({ refreshToken: req.refresh_token, client, scope: req.scope })
+    );
     return c.json(tokens);
   }
 
-  /** POST /oauth/revoke — RFC 7009: always 200, even for unknown or malformed tokens. */
+  /**
+   * POST /oauth/revoke — RFC 7009: the client authenticates like at the token endpoint (401 if it fails);
+   * otherwise always 200, even for unknown, foreign or malformed tokens.
+   */
   async revoke(c: Context) {
     const form = await c.req.parseBody().catch(() => ({}));
     const body = revokeBody.safeParse(form);
-    if (body.success) await this.auth.revoke(body.data.token);
+    const data = body.success ? body.data : {};
+    const client = this.clientCredentials(c, data);
+    await this.withClientChallenge(c, client, () => this.auth.revoke(data.token, client));
     return c.body(null, 200);
   }
 
@@ -109,7 +124,7 @@ export class AuthController {
   /** POST /auth/register — creates the account and emails a verification code. */
   async register(c: Context) {
     const body = await parseJsonBody(c, registerBody);
-    return c.json(await this.auth.register(body), 201);
+    return c.json(await this.auth.register(body, this.mail(c)), 201);
   }
 
   /** POST /auth/email/verify — { challengeId, code, request_id? } -> { redirect } (sign-in) | { verified: true } */
@@ -121,12 +136,28 @@ export class AuthController {
 
   /**
    * POST /auth/email/link — { challengeId, token, request_id? } from the emailed link.
-   * Sign-in link + request_id (started by the browser that opened it) -> { redirect }; verify link -> { verified }.
+   * -> { verified } | { redirect } | { continue: <client initiate_login_uri> } (the link is kept in a cookie
+   * for the login page of the authorization request the client then starts: /auth/email/link/resume).
    */
   async openEmailLink(c: Context) {
     const body = await parseJsonBody(c, emailLinkBody);
-    const device = body.request_id !== undefined ? this.device(c) : undefined;
-    return c.json(await this.auth.openEmailLink(body.challengeId, body.token, body.request_id, device));
+    const result = await this.auth.openEmailLink(body.challengeId, body.token, this.device(c), body.request_id);
+    if (!("continue" in result)) return c.json(result);
+    const secure = new URL(c.req.url).protocol === "https:";
+    const { value, maxAgeSec } = result.resume;
+    setCookie(c, EMAIL_LINK_COOKIE, value, { httpOnly: true, sameSite: "Lax", secure, path: "/auth", maxAge: maxAgeSec });
+    setCookie(c, EMAIL_LINK_FLAG_COOKIE, "1", { sameSite: "Lax", secure, path: "/", maxAge: maxAgeSec });
+    return c.json({ continue: result.continue });
+  }
+
+  /** POST /auth/email/link/resume — { request_id } -> { redirect }: finish the sign-in the link started. */
+  async resumeEmailLink(c: Context) {
+    const { request_id } = await parseJsonBody(c, emailLinkResumeBody);
+    const cookie = getCookie(c, EMAIL_LINK_COOKIE);
+    // single use either way
+    deleteCookie(c, EMAIL_LINK_COOKIE, { path: "/auth" });
+    deleteCookie(c, EMAIL_LINK_FLAG_COOKIE, { path: "/" });
+    return c.json(await this.auth.resumeEmailLink(cookie, request_id, this.device(c)));
   }
 
   /** POST /auth/email/status — { challengeId } (account page, verify link) -> { pending } | { verified } */
@@ -139,12 +170,52 @@ export class AuthController {
   /** POST /auth/email/resend — { challengeId } -> a fresh code / link is emailed */
   async resendEmailCode(c: Context) {
     const { challengeId } = await parseJsonBody(c, emailResendBody);
-    return c.json(await this.auth.resendEmailCode(challengeId));
+    return c.json(await this.auth.resendEmailCode(challengeId, this.mail(c)));
   }
 
-  /** POST /auth/me/email/verification (Bearer) — emails a code to the current, unverified address */
+  /** POST /auth/me/email/verification (Bearer) — emails a code / link (per the token's client) */
   async startEmailVerification(c: Context<AuthEnv>) {
-    return c.json(await this.auth.startEmailVerification(c.get("user").id));
+    const user = c.get("user");
+    return c.json(await this.auth.startEmailVerification(user.id, user.clientId, this.mail(c)));
+  }
+
+  // ================================================================ OAuth clients (admin; RFC 7591 / 7592 metadata)
+
+  /** GET /admin/clients */
+  async listClients(c: Context<AuthEnv>) {
+    return c.json({ clients: await this.clients.list() });
+  }
+
+  /** GET /admin/clients/:id */
+  async getClient(c: Context<AuthEnv>) {
+    return c.json(await this.clients.get(parse(clientIdParam, c.req.param()).id));
+  }
+
+  /** POST /admin/clients — RFC 7591 §3.1; the response carries client_secret once (confidential clients). */
+  async registerClient(c: Context<AuthEnv>) {
+    c.header("Cache-Control", "no-store");
+    return c.json(await this.clients.register(await parseJsonBody(c, clientMetadataBody)), 201);
+  }
+
+  /** PUT /admin/clients/:id — RFC 7592 §2.2: complete metadata (omitted optional fields are cleared). */
+  async updateClient(c: Context<AuthEnv>) {
+    c.header("Cache-Control", "no-store");
+    const { id } = parse(clientIdParam, c.req.param());
+    return c.json(await this.clients.update(id, await parseJsonBody(c, clientMetadataBody)));
+  }
+
+  /** POST /admin/clients/:id/secret — new client_secret (the old one stops working). */
+  async rotateClientSecret(c: Context<AuthEnv>) {
+    c.header("Cache-Control", "no-store");
+    return c.json(await this.clients.rotateSecret(parse(clientIdParam, c.req.param()).id));
+  }
+
+  /** DELETE /admin/clients/:id — also revokes its tokens (RFC 7592 §2.3). */
+  async deleteClient(c: Context<AuthEnv>) {
+    // the master credential is not signed in through any client, so there is nothing to protect
+    const callerClientId = c.get("master") ? undefined : c.get("user").clientId;
+    await this.clients.delete(parse(clientIdParam, c.req.param()).id, callerClientId);
+    return c.body(null, 204);
   }
 
   // ================================================================ devices (Bearer)
@@ -199,7 +270,9 @@ export class AuthController {
   /** POST /auth/login/password -> { redirect } | { verify } (enter the emailed code next) */
   async loginPassword(c: Context) {
     const body = await parseJsonBody(c, passwordLoginBody);
-    return c.json(await this.auth.loginWithPassword(body.request_id, body.username, body.password, this.device(c)));
+    return c.json(
+      await this.auth.loginWithPassword(body.request_id, body.username, body.password, this.device(c), this.mail(c))
+    );
   }
 
   async passkeyLoginOptions(c: Context) {
@@ -240,6 +313,54 @@ export class AuthController {
   }
 
   // ================================================================ helpers
+
+  /**
+   * Client authentication (RFC 6749 §2.3.1): HTTP Basic, or client_id + client_secret in the form, or a
+   * public client's client_id alone. Using more than one method is an error.
+   */
+  private clientCredentials(c: Context, form: { client_id?: string; client_secret?: string }): ClientCredentials {
+    const basic = /^Basic\s+([A-Za-z0-9+/=]+)$/i.exec(c.req.header("Authorization") ?? "");
+    if (basic) {
+      if (form.client_secret !== undefined) {
+        throw new OAuthError("invalid_request", "Use only one client authentication method");
+      }
+      const decoded = Buffer.from(basic[1]!, "base64").toString("utf8");
+      const sep = decoded.indexOf(":");
+      // RFC 6749 §2.3.1: both parts are application/x-www-form-urlencoded
+      const unform = (v: string) => {
+        try {
+          return decodeURIComponent(v.replace(/\+/g, " "));
+        } catch {
+          return v;
+        }
+      };
+      const clientId = unform(sep < 0 ? decoded : decoded.slice(0, sep));
+      if (form.client_id !== undefined && form.client_id !== clientId) {
+        throw new OAuthError("invalid_request", "client_id does not match the Authorization header");
+      }
+      return { clientId, clientSecret: sep < 0 ? "" : unform(decoded.slice(sep + 1)), via: "basic" };
+    }
+    if (form.client_secret !== undefined) return { clientId: form.client_id, clientSecret: form.client_secret, via: "post" };
+    return { clientId: form.client_id, via: "none" };
+  }
+
+  /** RFC 6749 §5.2: a failed Basic authentication answers 401 with a WWW-Authenticate challenge. */
+  private async withClientChallenge<T>(c: Context, client: ClientCredentials, run: () => Promise<T>): Promise<T> {
+    try {
+      return await run();
+    } catch (error) {
+      if (error instanceof OAuthError && error.error === "invalid_client" && client.via === "basic") {
+        c.header("WWW-Authenticate", 'Basic realm="oauth"');
+      }
+      throw error;
+    }
+  }
+
+  /** Emailed links open the auth UI the request came from (only allow-listed origins). */
+  private mail(c: Context): MailContext {
+    const origin = c.req.header("origin");
+    return { uiOrigin: origin && this.uiOrigins.includes(origin) ? origin : this.uiOrigins[0]! };
+  }
 
   /** The browser behind a sign-in request; gives it a device cookie the first time. */
   private device(c: Context): DeviceContext {

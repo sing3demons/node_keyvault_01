@@ -4,6 +4,7 @@ import { addPasskey, getIdentity, logout, onIdentityChange, passkeysSupported, r
 import {
   AccountDialog,
   DeleteDialog,
+  ClientsDialog,
   DevicesDialog,
   EditDialog,
   SecretRow,
@@ -28,6 +29,7 @@ export function App() {
   const [transferring, setTransferring] = useState<SecretSummary | null>(null);
   const [usersOpen, setUsersOpen] = useState(false);
   const [devicesOpen, setDevicesOpen] = useState(false);
+  const [clientsOpen, setClientsOpen] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [account, setAccount] = useState<Account | null>(null);
   const [accountOpen, setAccountOpen] = useState(false);
@@ -133,6 +135,11 @@ export function App() {
           {account?.roles.includes("admin") && (
             <button className="btn-ghost" onClick={() => setUsersOpen(true)} title="Manage users and admins">
               <UsersIcon /> <span className="label-text">Users</span>
+            </button>
+          )}
+          {account?.roles.includes("admin") && (
+            <button className="btn-ghost" onClick={() => setClientsOpen(true)} title="OAuth clients (apps that sign users in here)">
+              🧩 <span className="label-text">Clients</span>
             </button>
           )}
           <button className="btn-ghost" onClick={() => setDevicesOpen(true)} title="Devices that signed in to your account">
@@ -244,6 +251,8 @@ export function App() {
       <UsersDialog open={usersOpen} currentUserId={account?.id} onClose={() => setUsersOpen(false)} />
 
       <DevicesDialog open={devicesOpen} onClose={() => setDevicesOpen(false)} />
+
+      <ClientsDialog open={clientsOpen} onClose={() => setClientsOpen(false)} />
 
       <DeleteDialog
         name={deleting}

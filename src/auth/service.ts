@@ -6,12 +6,15 @@ import type { AuthenticatedUser, TokenAuthenticator } from "../shared/middleware
 import { expiresIn } from "../shared/util.js";
 import { OAuthError, verifyPkceS256 } from "./oauth.js";
 import { OIDC_SCOPES, type IdTokenIssuer } from "./oidc.js";
+import type { ClientCredentials, ClientService } from "./clients.js";
 import type { DeviceContext, DeviceService } from "./devices.js";
-import type { EmailCodeService, PendingVerification } from "./email-codes.js";
+import type { EmailCodeService, MailContext, PendingVerification } from "./email-codes.js";
 import {
   displayProfile,
   isPassword,
+  type AuthRequest,
   type EmailChallenge,
+  type OAuthClient,
   type LocalizedProfile,
   type Role,
   type SignInMethod,
@@ -20,13 +23,6 @@ import {
 } from "./model.js";
 import { DuplicateKeyError, type AuthRepository } from "./repository.js";
 import type { RegisterBody, UpdateAccountBody } from "./schemas.js";
-
-export interface OAuthSettings {
-  clientId: string;
-  redirectUris: string[];
-  accessTokenTtlSec: number;
-  refreshTokenTtlSec: number;
-}
 
 export interface AuthorizeParams {
   responseType?: string;
@@ -43,7 +39,8 @@ export interface TokenResponse {
   access_token: string;
   token_type: "Bearer";
   expires_in: number;
-  refresh_token: string;
+  /** Only for clients registered with the refresh_token grant. */
+  refresh_token?: string;
   scope: string;
   /** Present when the grant includes the "openid" scope. */
   id_token?: string;
@@ -51,10 +48,18 @@ export interface TokenResponse {
 
 /** Scopes protecting this API (as opposed to the OIDC identity scopes). */
 export const API_SCOPES = ["secrets"] as const;
-const SUPPORTED_SCOPES = new Set<string>([...OIDC_SCOPES, ...API_SCOPES]);
-const DEFAULT_SCOPE = "secrets";
+export const SUPPORTED_SCOPES: ReadonlySet<string> = new Set<string>([...OIDC_SCOPES, ...API_SCOPES]);
 const AUTH_REQUEST_TTL_MS = 10 * 60_000;
 const AUTH_CODE_TTL_MS = 60_000;
+
+/**
+ * Opening a sign-in link when this browser has no sign-in of its own yet: go to the client's
+ * initiate_login_uri (it starts one), carrying the link in a cookie (`resume`) for the login page.
+ */
+export interface LinkContinue {
+  continue: string;
+  resume: { value: string; maxAgeSec: number };
+}
 
 /** Result of a login step: signed in (go to `redirect`), or an emailed code must be entered first. */
 export type SignInStep = { redirect: string } | { verify: PendingVerification };
@@ -116,7 +121,7 @@ export class AuthService implements TokenAuthenticator {
   constructor(
     private readonly repo: AuthRepository,
     private readonly hasher: SecretHasher,
-    private readonly oauth: OAuthSettings,
+    private readonly clients: ClientService,
     private readonly idTokens: IdTokenIssuer,
     private readonly emailCodes: EmailCodeService,
     private readonly devices: DeviceService,
@@ -158,15 +163,11 @@ export class AuthService implements TokenAuthenticator {
    * email and a code is sent to it. With `request_id` (the login page) entering that code also signs the
    * user in; without it (API clients) it only verifies the address.
    */
-  async register({
-    request_id: requestId,
-    username,
-    email,
-    password,
-    profiles,
-    preferredLang
-  }: RegisterBody): Promise<Account & { verification: PendingVerification }> {
-    if (requestId !== undefined) await this.assertAuthRequest(requestId);
+  async register(
+    { request_id: requestId, username, email, password, profiles, preferredLang }: RegisterBody,
+    mail: MailContext
+  ): Promise<Account & { verification: PendingVerification }> {
+    const client = requestId !== undefined ? await this.clientOf(await this.requireAuthRequest(requestId)) : undefined;
     const now = new Date();
     const user: User = {
       id: randomUUID(),
@@ -183,28 +184,45 @@ export class AuthService implements TokenAuthenticator {
     } catch (error) {
       throw this.conflict(error);
     }
-    const verification = await this.emailCodes.start({
-      purpose: requestId !== undefined ? "signin" : "verify",
-      reason: "register",
-      userId: user.id,
-      email,
-      ...(requestId !== undefined ? { authRequestId: requestId } : {})
-    });
+    const verification = await this.emailCodes.start(
+      {
+        purpose: requestId !== undefined ? "signin" : "verify",
+        reason: "register",
+        // the client's choice; API registration without a client gets a code
+        method: client?.emailVerification ?? "code",
+        userId: user.id,
+        email,
+        ...(requestId !== undefined ? { authRequestId: requestId } : {}),
+        ...(client ? { clientId: client.id } : {})
+      },
+      mail
+    );
     return { ...toAccount(user), verification };
   }
 
   // ---------------------------------------------------------------- email verification
 
-  /** Account page: email a code to the user's current (unverified) address. */
-  async startEmailVerification(userId: string): Promise<PendingVerification> {
+  /** Account page: email a code / link (per the caller's client) to the user's current, unverified address. */
+  async startEmailVerification(userId: string, clientId: string, mail: MailContext): Promise<PendingVerification> {
     const user = await this.requireUser(userId);
     if (!user.email) throw new HttpError(400, "Add an email address first");
     if (user.emailVerifiedAt) throw new HttpError(409, "Email is already verified", "conflict");
-    return this.emailCodes.start({ purpose: "verify", reason: "verify_email", userId: user.id, email: user.email });
+    const client = await this.clients.find(clientId);
+    return this.emailCodes.start(
+      {
+        purpose: "verify",
+        reason: "verify_email",
+        method: client?.emailVerification ?? "code",
+        userId: user.id,
+        email: user.email,
+        ...(client ? { clientId: client.id } : {})
+      },
+      mail
+    );
   }
 
-  resendEmailCode(challengeId: string): Promise<PendingVerification> {
-    return this.emailCodes.resend(challengeId);
+  resendEmailCode(challengeId: string, mail: MailContext): Promise<PendingVerification> {
+    return this.emailCodes.resend(challengeId, mail);
   }
 
   /**
@@ -224,21 +242,62 @@ export class AuthService implements TokenAuthenticator {
   }
 
   /**
-   * Emailed link opened. Marks the address verified; a sign-in link also signs the user in on `requestId`,
-   * the authorization request started by the browser that opened the link (so it gets the tokens).
+   * Emailed link opened (marks the address verified).
+   * - verify link -> { verified }
+   * - sign-in link with `requestId` (an authorization request this browser started for the same client)
+   *   -> signed in on it: { redirect } to the client's redirect_uri with a code
+   * - sign-in link without one -> { continue } to the client's initiate_login_uri (OIDC Core §4), which starts
+   *   that request; the link rides along in a cookie (resumeEmailLink). A client without initiate_login_uri
+   *   gets its original request completed here instead (fine for clients that keep their state in cookies).
    */
   async openEmailLink(
     challengeId: string,
     token: string,
-    requestId?: string,
-    device?: DeviceContext
-  ): Promise<{ redirect: string } | { verified: true }> {
-    if (requestId !== undefined) await this.assertAuthRequest(requestId);
-    const challenge = await this.emailCodes.openLink(challengeId, token, requestId !== undefined);
+    device: DeviceContext,
+    requestId?: string
+  ): Promise<{ redirect: string } | { verified: true } | LinkContinue> {
+    if (requestId !== undefined) {
+      const req = await this.requireAuthRequest(requestId);
+      const challenge = await this.emailCodes.openLink(challengeId, token, req.clientId);
+      return this.signInWithLink(challenge, requestId, device);
+    }
+    const challenge = await this.emailCodes.inspectLink(challengeId, token);
     await this.repo.users.markEmailVerified(challenge.userId, challenge.email, new Date());
     if (challenge.purpose === "verify") return { verified: true };
-    return this.completeAuthRequest(requestId!, challenge.userId, {
-      device: device!,
+
+    const client = challenge.clientId ? await this.clients.find(challenge.clientId) : null;
+    if (client?.initiateLoginUri) {
+      const url = new URL(client.initiateLoginUri);
+      url.searchParams.set("iss", this.idTokens.issuer);
+      return {
+        continue: url.toString(),
+        resume: {
+          value: `${challengeId}.${token}`,
+          maxAgeSec: Math.max(1, Math.floor((challenge.expiresAt.getTime() - Date.now()) / 1000))
+        }
+      };
+    }
+    const original = challenge.authRequestId && (await this.repo.authRequests.findActive(challenge.authRequestId, new Date()));
+    if (!original) {
+      throw new HttpError(400, "This sign-in has expired — please sign in again from the app", "expired_code");
+    }
+    const consumed = await this.emailCodes.openLink(challengeId, token, original.clientId);
+    return this.signInWithLink(consumed, original.id, device);
+  }
+
+  /** Login page of a sign-in started by the client's initiate_login_uri: redeem the link kept in the cookie. */
+  async resumeEmailLink(cookie: string | undefined, requestId: string, device: DeviceContext): Promise<{ redirect: string }> {
+    const [challengeId, token] = (cookie ?? "").split(".");
+    if (!challengeId || !token) throw new HttpError(400, "No sign-in link to continue — open the link from the email again", "expired_code");
+    const r = await this.openEmailLink(challengeId, token, device, requestId);
+    if (!("redirect" in r)) throw new HttpError(400, "This link does not sign in");
+    return r;
+  }
+
+  private async signInWithLink(challenge: EmailChallenge, requestId: string, device: DeviceContext) {
+    await this.repo.users.markEmailVerified(challenge.userId, challenge.email, new Date());
+    return this.completeAuthRequest(requestId, challenge.userId, {
+      device,
       method: challenge.reason === "register" ? "registration" : "password+email_link"
     });
   }
@@ -344,18 +403,29 @@ export class AuthService implements TokenAuthenticator {
    * Login page, password step. Signing in with an email address always needs the code emailed to it;
    * with a username, only while the account's email is still unverified (finishing registration).
    */
-  async loginWithPassword(requestId: string, identifier: string, password: string, device: DeviceContext): Promise<SignInStep> {
-    await this.assertAuthRequest(requestId);
+  async loginWithPassword(
+    requestId: string,
+    identifier: string,
+    password: string,
+    device: DeviceContext,
+    mail: MailContext
+  ): Promise<SignInStep> {
+    const client = await this.clientOf(await this.requireAuthRequest(requestId));
     const user = await this.verifyPassword(identifier, password);
     const byEmail = identifier.includes("@");
     if (user.email && (byEmail || !user.emailVerifiedAt)) {
-      const verify = await this.emailCodes.start({
-        purpose: "signin",
-        reason: byEmail ? "login" : "verify_email",
-        userId: user.id,
-        email: user.email,
-        authRequestId: requestId
-      });
+      const verify = await this.emailCodes.start(
+        {
+          purpose: "signin",
+          reason: byEmail ? "login" : "verify_email",
+          method: client.emailVerification,
+          userId: user.id,
+          email: user.email,
+          authRequestId: requestId,
+          clientId: client.id
+        },
+        mail
+      );
       return { verify };
     }
     return this.completeAuthRequest(requestId, user.id, { device, method: "password" });
@@ -386,10 +456,9 @@ export class AuthService implements TokenAuthenticator {
    * (must NOT redirect); everything else is returned as a redirect to the client with `error`.
    */
   async createAuthRequest(p: AuthorizeParams): Promise<{ requestId: string } | { redirect: string }> {
-    if (p.clientId !== this.oauth.clientId) {
-      throw new HttpError(400, "Unknown client_id", "invalid_client");
-    }
-    if (!p.redirectUri || !this.oauth.redirectUris.includes(p.redirectUri)) {
+    const client = await this.clients.forAuthorization(p.clientId);
+    // exact match against the registered list (RFC 6749 §3.1.2.3)
+    if (!p.redirectUri || !client.redirectUris.includes(p.redirectUri)) {
       throw new HttpError(400, "Invalid redirect_uri");
     }
     const fail = (error: string, description: string) => ({
@@ -401,14 +470,15 @@ export class AuthService implements TokenAuthenticator {
     if (!p.codeChallenge || p.codeChallengeMethod !== "S256" || !/^[A-Za-z0-9_-]{43}$/.test(p.codeChallenge)) {
       return fail("invalid_request", "PKCE with code_challenge_method=S256 is required");
     }
-    const scope = this.normalizeScope(p.scope);
-    if (!scope) {
-      return fail("invalid_scope", "Unsupported scope");
+    // no scope requested => the client's registered scope (RFC 6749 §3.3)
+    const scope = this.normalizeScope(p.scope ?? client.scope);
+    if (!scope || !this.within(scope, client.scope)) {
+      return fail("invalid_scope", "Requested scope is not allowed for this client");
     }
     const requestId = randomToken(24);
     await this.repo.authRequests.create({
       id: requestId,
-      clientId: p.clientId,
+      clientId: client.id,
       redirectUri: p.redirectUri,
       state: p.state,
       scope,
@@ -421,10 +491,21 @@ export class AuthService implements TokenAuthenticator {
 
   /** Throws if the pending authorization request does not exist / expired (does not consume it). */
   async assertAuthRequest(requestId: string): Promise<void> {
+    await this.requireAuthRequest(requestId);
+  }
+
+  private async requireAuthRequest(requestId: string): Promise<AuthRequest> {
     const req = await this.repo.authRequests.findActive(requestId, new Date());
     if (!req) {
       throw new HttpError(400, "Authorization request expired or not found — please start sign-in again");
     }
+    return req;
+  }
+
+  private async clientOf(req: AuthRequest): Promise<OAuthClient> {
+    const client = await this.clients.find(req.clientId);
+    if (!client) throw new HttpError(400, "This app is no longer registered", "invalid_client");
+    return client;
   }
 
   /** User authenticated: consume the authorization request, record the device and issue a one-time code. */
@@ -457,12 +538,10 @@ export class AuthService implements TokenAuthenticator {
   async exchangeCode(p: {
     code: string;
     redirectUri: string;
-    clientId: string;
+    client: ClientCredentials;
     codeVerifier: string;
   }): Promise<TokenResponse> {
-    if (p.clientId !== this.oauth.clientId) {
-      throw new OAuthError("invalid_client", "Unknown client", 401);
-    }
+    const client = await this.clients.authenticate(p.client);
     // Atomically mark as used so a code can only be redeemed once
     const codeDoc = await this.repo.authCodes.redeem(sha256(p.code));
     if (!codeDoc) {
@@ -476,22 +555,23 @@ export class AuthService implements TokenAuthenticator {
     if (codeDoc.expiresAt <= new Date()) {
       throw new OAuthError("invalid_grant", "Authorization code is invalid, expired or already used");
     }
-    if (codeDoc.clientId !== p.clientId || codeDoc.redirectUri !== p.redirectUri) {
+    if (codeDoc.clientId !== client.id || codeDoc.redirectUri !== p.redirectUri) {
       throw new OAuthError("invalid_grant", "client_id or redirect_uri does not match the authorization request");
     }
     if (!verifyPkceS256(p.codeVerifier, codeDoc.codeChallenge)) {
       throw new OAuthError("invalid_grant", "PKCE verification failed");
     }
-    return this.issueTokens(codeDoc.userId, codeDoc.clientId, codeDoc.scope, codeDoc.familyId, {
+    return this.issueTokens(codeDoc.userId, client, codeDoc.scope, codeDoc.familyId, {
       authTime: codeDoc.authTime ?? new Date(),
       nonce: codeDoc.nonce,
       deviceId: codeDoc.deviceId
     });
   }
 
-  async refresh(p: { refreshToken: string; clientId: string; scope?: string }): Promise<TokenResponse> {
-    if (p.clientId !== this.oauth.clientId) {
-      throw new OAuthError("invalid_client", "Unknown client", 401);
+  async refresh(p: { refreshToken: string; client: ClientCredentials; scope?: string }): Promise<TokenResponse> {
+    const client = await this.clients.authenticate(p.client);
+    if (!client.grantTypes.includes("refresh_token")) {
+      throw new OAuthError("unauthorized_client", "This client may not use the refresh_token grant");
     }
     const tokenHash = sha256(p.refreshToken);
     // Rotation: consume the old refresh token atomically
@@ -504,7 +584,7 @@ export class AuthService implements TokenAuthenticator {
       }
       throw new OAuthError("invalid_grant", "Refresh token is invalid or revoked");
     }
-    if (current.expiresAt <= new Date() || current.clientId !== p.clientId) {
+    if (current.expiresAt <= new Date() || current.clientId !== client.id) {
       throw new OAuthError("invalid_grant", "Refresh token is invalid or expired");
     }
     let scope = current.scope;
@@ -520,18 +600,22 @@ export class AuthService implements TokenAuthenticator {
       await this.devices.touch(current.deviceId).catch((e) => console.error("device touch failed", e));
     }
     // OIDC Core §12.2: refreshed ID Tokens keep auth_time; nonce is not repeated
-    return this.issueTokens(current.userId, current.clientId, scope, current.familyId, {
+    return this.issueTokens(current.userId, client, scope, current.familyId, {
       authTime: current.authTime ?? new Date(),
       deviceId: current.deviceId
     });
   }
 
-  /** RFC 7009 — revoking either token type ends the whole session (family). */
-  async revoke(token: string | undefined): Promise<void> {
+  /**
+   * RFC 7009 — the client authenticates as at the token endpoint and may revoke only its own tokens
+   * (others are ignored, still 200). Revoking either token type ends the whole session (family).
+   */
+  async revoke(token: string | undefined, credentials: ClientCredentials): Promise<void> {
+    const client = await this.clients.authenticate(credentials);
     if (!token) return;
     const hash = sha256(token);
     const doc = (await this.repo.tokens.findRefresh(hash)) ?? (await this.repo.tokens.findAccess(hash));
-    if (doc) {
+    if (doc && doc.clientId === client.id) {
       await this.revokeFamily(doc.familyId);
     }
   }
@@ -569,36 +653,40 @@ export class AuthService implements TokenAuthenticator {
     return new HttpError(409, error.message);
   }
 
+  /** Lifetimes come from the client; a refresh token only for clients with the refresh_token grant. */
   private async issueTokens(
     userId: string,
-    clientId: string,
+    client: OAuthClient,
     scope: string,
     familyId: string,
     session: { authTime: Date; nonce?: string; deviceId?: string }
   ): Promise<TokenResponse> {
+    const clientId = client.id;
     const accessToken = randomToken();
-    const refreshToken = randomToken();
-    const { accessTokenTtlSec, refreshTokenTtlSec } = this.oauth;
+    const refreshToken = client.grantTypes.includes("refresh_token") ? randomToken() : undefined;
+    const { accessTokenTtlSec, refreshTokenTtlSec } = client;
     const device = session.deviceId !== undefined ? { deviceId: session.deviceId } : {};
     await this.repo.tokens.createPair(
       { id: sha256(accessToken), userId, clientId, scope, familyId, ...device, expiresAt: expiresIn(accessTokenTtlSec * 1000) },
-      {
-        id: sha256(refreshToken),
-        userId,
-        clientId,
-        scope,
-        familyId,
-        ...device,
-        revoked: false,
-        authTime: session.authTime,
-        expiresAt: expiresIn(refreshTokenTtlSec * 1000)
-      }
+      refreshToken
+        ? {
+            id: sha256(refreshToken),
+            userId,
+            clientId,
+            scope,
+            familyId,
+            ...device,
+            revoked: false,
+            authTime: session.authTime,
+            expiresAt: expiresIn(refreshTokenTtlSec * 1000)
+          }
+        : null
     );
     const response: TokenResponse = {
       access_token: accessToken,
       token_type: "Bearer",
       expires_in: accessTokenTtlSec,
-      refresh_token: refreshToken,
+      ...(refreshToken ? { refresh_token: refreshToken } : {}),
       scope
     };
     if (scope.split(" ").includes("openid")) {
@@ -609,6 +697,7 @@ export class AuthService implements TokenAuthenticator {
         authTime: session.authTime,
         nonce: session.nonce,
         accessToken,
+        ttlSec: client.idTokenTtlSec,
         claims: this.scopedClaims(user, scope)
       });
     }
@@ -619,8 +708,14 @@ export class AuthService implements TokenAuthenticator {
     return this.repo.tokens.revokeFamily(familyId);
   }
 
-  private normalizeScope(scope: string | undefined): string | null {
-    const parts = (scope ?? DEFAULT_SCOPE).split(" ").filter(Boolean);
+  /** Every scope in `scope` is also in `allowed`. */
+  private within(scope: string, allowed: string): boolean {
+    const set = new Set(allowed.split(" "));
+    return scope.split(" ").every((s) => set.has(s));
+  }
+
+  private normalizeScope(scope: string): string | null {
+    const parts = scope.split(" ").filter(Boolean);
     if (parts.length === 0 || !parts.every((s) => SUPPORTED_SCOPES.has(s))) return null;
     return [...new Set(parts)].sort().join(" ");
   }

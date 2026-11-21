@@ -1,13 +1,18 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import {
   api,
+  userClientsApi,
+  type ClientsApi,
   LANGUAGES,
   PERMISSIONS,
   type Account,
   type AdminUser,
   type Device,
   type Grant,
+  type OAuthClient,
+  type OAuthClientInput,
   type Permission,
+  SCOPES,
   type SecretSummary,
   type SignInMethod
 } from "./api";
@@ -917,6 +922,7 @@ function UsersPanel({ currentUserId, onClose }: { currentUserId?: string; onClos
 const METHOD_LABELS: Record<SignInMethod, string> = {
   password: "Password",
   "password+email_code": "Password + email code",
+  "password+email_link": "Password + email link",
   passkey: "Passkey",
   registration: "Registration"
 };
@@ -1015,5 +1021,325 @@ function DevicesPanel({ onClose }: { onClose: () => void }) {
         </button>
       </div>
     </div>
+  );
+}
+
+/* ---------- OAuth clients (admin) ---------- */
+
+const AUTH_METHOD_LABELS: Record<OAuthClient["token_endpoint_auth_method"], string> = {
+  none: "Public (PKCE, no secret)",
+  client_secret_basic: "Confidential — secret via HTTP Basic",
+  client_secret_post: "Confidential — secret in form body"
+};
+
+const BLANK_CLIENT: OAuthClientInput = {
+  client_name: "",
+  token_endpoint_auth_method: "client_secret_basic",
+  redirect_uris: [],
+  grant_types: ["authorization_code", "refresh_token"],
+  scope: "openid profile email",
+  access_token_lifetime: 900,
+  refresh_token_lifetime: 2_592_000,
+  id_token_lifetime: 900,
+  email_verification: "code"
+};
+
+export function ClientsDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  return (
+    <Modal open={open} onClose={onClose}>
+      {open && <ClientsPanel clientsApi={userClientsApi} onClose={onClose} />}
+    </Modal>
+  );
+}
+
+/** List / create / edit / rotate / delete clients, through `clientsApi` (admin user or master credential). */
+export function ClientsPanel({ clientsApi, onClose }: { clientsApi: ClientsApi; onClose?: () => void }) {
+  const [clients, setClients] = useState<OAuthClient[] | null>(null);
+  const [editing, setEditing] = useState<OAuthClient | "new" | null>(null);
+  /** Secret just issued: shown once. */
+  const [secret, setSecret] = useState<{ clientId: string; value: string } | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const load = () =>
+    clientsApi
+      .list()
+      .then(setClients)
+      .catch((e: Error) => setError(e.message));
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const saved = (c: OAuthClient) => {
+    setEditing(null);
+    if (c.client_secret) setSecret({ clientId: c.client_id, value: c.client_secret });
+    load();
+  };
+
+  const act = async (fn: () => Promise<unknown>) => {
+    setBusy(true);
+    setError("");
+    try {
+      await fn();
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (editing) {
+    return (
+      <ClientForm
+        client={editing === "new" ? null : editing}
+        clientsApi={clientsApi}
+        onCancel={() => setEditing(null)}
+        onSaved={saved}
+      />
+    );
+  }
+
+  return (
+    <div>
+      <div className="dlg-body">
+        <h2>OAuth clients</h2>
+        <p className="hint">
+          Apps that may sign users in here (OAuth 2.0 / OpenID Connect). Each one has its own redirect URIs, token lifetimes
+          and email verification method.
+        </p>
+        {secret && (
+          <div className="secret-once">
+            <strong>Client secret for {secret.clientId}</strong>
+            <span className="hint">Copy it now — it is not shown again.</span>
+            <div className="secret-once-row">
+              <code className="mono">{secret.value}</code>
+              <button type="button" className="btn-ghost" onClick={() => navigator.clipboard.writeText(secret.value)} title="Copy">
+                <CopyIcon />
+              </button>
+            </div>
+          </div>
+        )}
+        {clients === null ? (
+          <div className="skeleton" />
+        ) : (
+          <div className="device-list">
+            {clients.map((c) => (
+              <div className="device-row" key={c.client_id}>
+                <div className="device-main">
+                  <div>
+                    <strong>{c.client_name}</strong>
+                    <span className="badge">{c.token_endpoint_auth_method === "none" ? "Public" : "Confidential"}</span>
+                    <span className="badge">Email {c.email_verification === "link" ? "link" : "code"}</span>
+                  </div>
+                  <div className="hint mono">{c.client_id}</div>
+                  <div className="hint">{c.redirect_uris.join(" · ")}</div>
+                </div>
+                <div className="device-actions">
+                  <button className="btn-ghost" disabled={busy} onClick={() => setEditing(c)} title="Edit">
+                    <EditIcon />
+                  </button>
+                  {c.token_endpoint_auth_method !== "none" && (
+                    <button
+                      className="btn-ghost"
+                      disabled={busy}
+                      title="New client secret"
+                      onClick={() =>
+                        confirm(`Issue a new secret for “${c.client_name}”? The current one stops working immediately.`) &&
+                        act(async () => {
+                          const r = await clientsApi.rotateSecret(c.client_id);
+                          if (r.client_secret) setSecret({ clientId: r.client_id, value: r.client_secret });
+                        })
+                      }
+                    >
+                      🔑
+                    </button>
+                  )}
+                  <button
+                    className="btn-ghost"
+                    disabled={busy}
+                    title="Delete (also revokes its tokens)"
+                    onClick={() =>
+                      confirm(`Delete “${c.client_name}”? Everyone signed in to it is signed out.`) &&
+                      act(() => clientsApi.remove(c.client_id))
+                    }
+                  >
+                    <TrashIcon />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="error-text">{error}</div>
+      </div>
+      <div className="dlg-foot">
+        {onClose && (
+          <button type="button" className="btn-ghost" onClick={onClose}>
+            Done
+          </button>
+        )}
+        <button type="button" className="btn-primary" onClick={() => { setSecret(null); setEditing("new"); }}>
+          New client
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ClientForm({
+  client,
+  clientsApi,
+  onCancel,
+  onSaved
+}: {
+  client: OAuthClient | null;
+  clientsApi: ClientsApi;
+  onCancel: () => void;
+  onSaved: (c: OAuthClient) => void;
+}) {
+  const start = client ?? BLANK_CLIENT;
+  const [clientId, setClientId] = useState("");
+  const [name, setName] = useState(start.client_name);
+  const [authMethod, setAuthMethod] = useState(start.token_endpoint_auth_method);
+  const [redirects, setRedirects] = useState(start.redirect_uris.join("\n"));
+  const [scopes, setScopes] = useState(new Set(start.scope.split(" ").filter(Boolean)));
+  const [refresh, setRefresh] = useState(start.grant_types.includes("refresh_token"));
+  const [initiate, setInitiate] = useState(start.initiate_login_uri ?? "");
+  const [homepage, setHomepage] = useState(start.client_uri ?? "");
+  const [emailMethod, setEmailMethod] = useState(start.email_verification);
+  const [accessTtl, setAccessTtl] = useState(String(start.access_token_lifetime));
+  const [refreshTtl, setRefreshTtl] = useState(String(start.refresh_token_lifetime));
+  const [idTtl, setIdTtl] = useState(String(start.id_token_lifetime));
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const toggleScope = (s: string) =>
+    setScopes((set) => {
+      const next = new Set(set);
+      if (next.has(s)) next.delete(s);
+      else next.add(s);
+      return next;
+    });
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setSaving(true);
+    setError("");
+    const input: OAuthClientInput = {
+      ...(client ? { client_id: client.client_id } : clientId.trim() ? { client_id: clientId.trim() } : {}),
+      client_name: name.trim(),
+      token_endpoint_auth_method: authMethod,
+      redirect_uris: redirects.split(/\s+/).filter(Boolean),
+      grant_types: refresh ? ["authorization_code", "refresh_token"] : ["authorization_code"],
+      scope: [...scopes].join(" "),
+      ...(initiate.trim() ? { initiate_login_uri: initiate.trim() } : {}),
+      ...(homepage.trim() ? { client_uri: homepage.trim() } : {}),
+      access_token_lifetime: Number(accessTtl),
+      refresh_token_lifetime: Number(refreshTtl),
+      id_token_lifetime: Number(idTtl),
+      email_verification: emailMethod
+    };
+    try {
+      onSaved(client ? await clientsApi.update(client.client_id, input) : await clientsApi.create(input));
+    } catch (e) {
+      setError((e as Error).message);
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit}>
+      <div className="dlg-body">
+        <h2>{client ? `Edit ${client.client_name}` : "New OAuth client"}</h2>
+        {client ? (
+          <div className="hint">
+            client_id <span className="mono">{client.client_id}</span>
+          </div>
+        ) : (
+          <label>
+            Client ID
+            <input value={clientId} onChange={(e) => setClientId(e.target.value)} placeholder="random if empty" pattern="[A-Za-z0-9._~\-]{3,64}" />
+          </label>
+        )}
+        <label>
+          Name
+          <input value={name} onChange={(e) => setName(e.target.value)} required maxLength={100} />
+          <span className="hint">Shown in emails sent for this app.</span>
+        </label>
+        <label>
+          Client type
+          <select value={authMethod} onChange={(e) => setAuthMethod(e.target.value as OAuthClient["token_endpoint_auth_method"])}>
+            {Object.entries(AUTH_METHOD_LABELS).map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+          <span className="hint">Browser and mobile apps are public; server-side apps that can keep a secret are confidential.</span>
+        </label>
+        <label>
+          Redirect URIs
+          <textarea value={redirects} onChange={(e) => setRedirects(e.target.value)} rows={3} required placeholder="https://app.example.com/callback" />
+          <span className="hint">One per line, matched exactly. https (http only for localhost).</span>
+        </label>
+        <div>
+          <div className="field-label">Scopes</div>
+          <div className="check-row">
+            {SCOPES.map((s) => (
+              <label className="check" key={s}>
+                <input type="checkbox" checked={scopes.has(s)} onChange={() => toggleScope(s)} /> {s}
+              </label>
+            ))}
+            <label className="check">
+              <input type="checkbox" checked={refresh} onChange={(e) => setRefresh(e.target.checked)} /> refresh tokens
+            </label>
+          </div>
+        </div>
+        <label>
+          Email verification
+          <select value={emailMethod} onChange={(e) => setEmailMethod(e.target.value as "code" | "link")}>
+            <option value="code">6-digit code (OTP)</option>
+            <option value="link">Link</option>
+          </select>
+        </label>
+        <label>
+          Initiate login URI
+          <input value={initiate} onChange={(e) => setInitiate(e.target.value)} placeholder="https://app.example.com/login" />
+          <span className="hint">
+            OpenID Connect initiate_login_uri: where an emailed sign-in link sends the browser so the app starts a new sign-in.
+            Without it, the link finishes the original sign-in.
+          </span>
+        </label>
+        <label>
+          Home page
+          <input value={homepage} onChange={(e) => setHomepage(e.target.value)} placeholder="https://app.example.com" />
+        </label>
+        <div className="name-row">
+          <label>
+            Access token (s)
+            <input type="number" min={60} max={86400} value={accessTtl} onChange={(e) => setAccessTtl(e.target.value)} required />
+          </label>
+          <label>
+            Refresh token (s)
+            <input type="number" min={300} max={31536000} value={refreshTtl} onChange={(e) => setRefreshTtl(e.target.value)} required />
+          </label>
+          <label>
+            ID token (s)
+            <input type="number" min={60} max={86400} value={idTtl} onChange={(e) => setIdTtl(e.target.value)} required />
+          </label>
+        </div>
+        <div className="error-text">{error}</div>
+      </div>
+      <div className="dlg-foot">
+        <button type="button" className="btn-ghost" onClick={onCancel}>
+          Cancel
+        </button>
+        <button type="submit" className="btn-primary" disabled={saving}>
+          {saving ? "Saving…" : client ? "Save" : "Create"}
+        </button>
+      </div>
+    </form>
   );
 }

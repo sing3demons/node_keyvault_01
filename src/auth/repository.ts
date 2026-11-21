@@ -12,6 +12,7 @@ import type {
   Device,
   DeviceSignIn,
   EmailChallenge,
+  OAuthClient,
   RefreshToken,
   Role,
   User,
@@ -92,6 +93,17 @@ export interface DeviceRepository {
   delete(userId: string, id: string): Promise<boolean>;
 }
 
+export interface ClientRepository {
+  /** @throws DuplicateKeyError (field "id") */
+  create(client: OAuthClient): Promise<void>;
+  findById(id: string): Promise<OAuthClient | null>;
+  /** Oldest first. */
+  list(): Promise<OAuthClient[]>;
+  /** Replaces every field but id/createdAt. @returns false if there is no such client */
+  update(client: OAuthClient): Promise<boolean>;
+  delete(id: string): Promise<boolean>;
+}
+
 export interface AuthRequestRepository {
   create(req: AuthRequest): Promise<void>;
   findActive(id: string, now: Date): Promise<AuthRequest | null>;
@@ -107,8 +119,8 @@ export interface AuthCodeRepository {
 }
 
 export interface TokenRepository {
-  /** Persist an access/refresh pair (atomically where the backend supports it). */
-  createPair(access: AccessToken, refresh: RefreshToken): Promise<void>;
+  /** Persist an access token and, when the client may refresh, its refresh token (atomically where possible). */
+  createPair(access: AccessToken, refresh: RefreshToken | null): Promise<void>;
   findActiveAccess(id: string, now: Date): Promise<AccessToken | null>;
   findAccess(id: string): Promise<AccessToken | null>;
   findRefresh(id: string): Promise<RefreshToken | null>;
@@ -118,6 +130,8 @@ export interface TokenRepository {
   revokeFamily(familyId: string): Promise<void>;
   /** Same as revokeFamily, for every session the user started on the device. */
   revokeDevice(userId: string, deviceId: string): Promise<void>;
+  /** Every token issued to the client (client deleted / secret compromised). */
+  revokeClient(clientId: string): Promise<void>;
   /** Devices of the user that still hold a usable (unrevoked, unexpired) refresh token. */
   activeDeviceIds(userId: string, now: Date): Promise<string[]>;
 }
@@ -127,6 +141,7 @@ export interface AuthRepository {
   readonly challenges: ChallengeRepository;
   readonly emailChallenges: EmailChallengeRepository;
   readonly devices: DeviceRepository;
+  readonly clients: ClientRepository;
   readonly authRequests: AuthRequestRepository;
   readonly authCodes: AuthCodeRepository;
   readonly tokens: TokenRepository;

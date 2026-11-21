@@ -3,7 +3,7 @@
 
 import { z } from "zod";
 import { formatZodError } from "../shared/http.js";
-import { ROLES } from "./model.js";
+import { CLIENT_GRANT_TYPES, EMAIL_VERIFICATION_METHODS, ROLES, TOKEN_ENDPOINT_AUTH_METHODS } from "./model.js";
 import { OAuthError } from "./oauth.js";
 
 const nonEmpty = z.string().min(1);
@@ -157,6 +157,34 @@ export const usernameParam = z.object({ username: z.string().trim().toLowerCase(
 /** PUT /admin/users/:username/roles — the complete new role list ([] = regular user). */
 export const setRolesBody = z.object({ roles: z.array(z.enum(ROLES)).max(ROLES.length) });
 
+// ---------------------------------------------------------------- /admin/clients (RFC 7591 metadata)
+
+const seconds = (min: number, max: number) => z.number().int().min(min).max(max);
+
+/** Client metadata (RFC 7591 §2) + this server's extensions. Unknown members are ignored (RFC 7591 §2). */
+export const clientMetadataBody = z.object({
+  /** Optional on create (random if omitted); must not change on update. */
+  client_id: z
+    .string()
+    .regex(/^[A-Za-z0-9._~-]{3,64}$/, "client_id must be 3-64 chars: A-Z a-z 0-9 . _ ~ -")
+    .optional(),
+  client_name: z.string().trim().min(1, "client_name is required").max(100),
+  redirect_uris: z.array(z.string().trim().min(1).max(2000)).min(1, "at least one redirect_uri is required").max(20),
+  token_endpoint_auth_method: z.enum(TOKEN_ENDPOINT_AUTH_METHODS).optional(),
+  grant_types: z.array(z.enum(CLIENT_GRANT_TYPES)).min(1).optional(),
+  response_types: z.array(z.string()).optional(),
+  scope: z.string().trim().max(500).optional(),
+  client_uri: z.string().trim().max(2000).optional(),
+  initiate_login_uri: z.string().trim().max(2000).optional(),
+  access_token_lifetime: seconds(60, 86_400).optional(),
+  refresh_token_lifetime: seconds(300, 31_536_000).optional(),
+  id_token_lifetime: seconds(60, 86_400).optional(),
+  email_verification: z.enum(EMAIL_VERIFICATION_METHODS).optional()
+});
+
+export const clientIdParam = z.object({ id: z.string().min(1).max(64) });
+
+export type ClientMetadataBody = z.infer<typeof clientMetadataBody>;
 export type RegisterBody = z.infer<typeof registerBody>;
 export type UpdateAccountBody = z.infer<typeof updateAccountBody>;
 export type AttestationCredential = z.infer<typeof attestationCredential>;
@@ -182,21 +210,29 @@ export const tokenBody = z.discriminatedUnion("grant_type", [
     grant_type: z.literal("authorization_code"),
     code: nonEmpty,
     redirect_uri: nonEmpty,
-    client_id: nonEmpty,
+    // absent when the client authenticates with HTTP Basic (RFC 6749 §2.3.1)
+    client_id: nonEmpty.optional(),
+    client_secret: nonEmpty.optional(),
     code_verifier: nonEmpty
   }),
   z.object({
     grant_type: z.literal("refresh_token"),
     refresh_token: nonEmpty,
-    client_id: nonEmpty,
+    client_id: nonEmpty.optional(),
+    client_secret: nonEmpty.optional(),
     scope: z.string().optional()
   })
 ]);
 
 export const revokeBody = z.object({
   token: z.string().optional(),
-  token_type_hint: z.string().optional()
+  token_type_hint: z.string().optional(),
+  client_id: z.string().optional(),
+  client_secret: z.string().optional()
 });
+
+/** POST /auth/email/link/resume — the login page continuing an emailed sign-in link (kept in a cookie). */
+export const emailLinkResumeBody = z.object({ request_id: nonEmpty });
 
 /** Token endpoint errors must use the RFC 6749 §5.2 shape, so validation failures become OAuthError. */
 export function parseTokenRequest(form: Record<string, unknown>): z.output<typeof tokenBody> {

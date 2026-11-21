@@ -12,6 +12,7 @@ import type {
   AuthCode,
   AuthRequest,
   LocalizedProfile,
+  OAuthClient,
   AccountUpdate,
   RefreshToken,
   Role,
@@ -30,6 +31,7 @@ const {
   webauthnChallenges,
   emailChallenges,
   devices,
+  oauthClients,
   authRequests,
   authCodes,
   accessTokens,
@@ -319,6 +321,25 @@ export class DrizzleAuthRepository implements AuthRepository {
     }
   };
 
+  readonly clients = {
+    create: (c: OAuthClient) => this.insert("Client", () => this.db.insert(oauthClients).values(c)),
+    findById: async (id: string) =>
+      clean<OAuthClient>((await this.db.select().from(oauthClients).where(eq(oauthClients.id, id)))[0]),
+    list: async () =>
+      (await this.db.select().from(oauthClients).orderBy(asc(oauthClients.createdAt))).map((r) => clean<OAuthClient>(r)!),
+    update: async (c: OAuthClient) => {
+      const { id, createdAt: _createdAt, ...rest } = c;
+      const rows = await this.db
+        .update(oauthClients)
+        .set({ ...rest, secretHash: c.secretHash ?? null, clientUri: c.clientUri ?? null, initiateLoginUri: c.initiateLoginUri ?? null })
+        .where(eq(oauthClients.id, id))
+        .returning({ id: oauthClients.id });
+      return rows.length > 0;
+    },
+    delete: async (id: string) =>
+      (await this.db.delete(oauthClients).where(eq(oauthClients.id, id)).returning({ id: oauthClients.id })).length > 0
+  };
+
   readonly authRequests = {
     create: (r: AuthRequest) => this.insert("Authorization request", () => this.db.insert(authRequests).values(r)),
     findActive: async (id: string, now: Date) =>
@@ -353,11 +374,11 @@ export class DrizzleAuthRepository implements AuthRepository {
   };
 
   readonly tokens = {
-    createPair: (access: AccessToken, refresh: RefreshToken) =>
+    createPair: (access: AccessToken, refresh: RefreshToken | null) =>
       this.insert("Token", () =>
         this.db.transaction(async (tx) => {
           await tx.insert(accessTokens).values(access);
-          await tx.insert(refreshTokens).values(refresh);
+          if (refresh) await tx.insert(refreshTokens).values(refresh);
         })
       ),
     findActiveAccess: async (id: string, now: Date) =>
@@ -392,6 +413,12 @@ export class DrizzleAuthRepository implements AuthRepository {
           .set({ revoked: true })
           .where(and(eq(refreshTokens.userId, userId), eq(refreshTokens.deviceId, deviceId)));
         await tx.delete(accessTokens).where(and(eq(accessTokens.userId, userId), eq(accessTokens.deviceId, deviceId)));
+      });
+    },
+    revokeClient: async (clientId: string) => {
+      await this.db.transaction(async (tx) => {
+        await tx.update(refreshTokens).set({ revoked: true }).where(eq(refreshTokens.clientId, clientId));
+        await tx.delete(accessTokens).where(eq(accessTokens.clientId, clientId));
       });
     },
     activeDeviceIds: async (userId: string, now: Date) => {

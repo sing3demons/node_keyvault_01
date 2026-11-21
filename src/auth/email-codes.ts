@@ -1,10 +1,11 @@
 // One-time codes or links sent by email: proving an address (registration, account page) and the extra
 // sign-in step when someone signs in with their email address.
 //
-// EMAIL_VERIFICATION=code — the email holds a 6-digit code, typed into the page that asked for it (check()).
-// EMAIL_VERIFICATION=link — the email holds a link with a 256-bit token (openLink()):
-//   - sign-in links sign the user in where the link is opened: that tab starts its own OAuth request
-//     (it cannot reuse the original tab's PKCE verifier) and redeems the link against it;
+// The method is chosen per OAuth client (OAuthClient.emailVerification) and fixed on the challenge:
+// "code" — the email holds a 6-digit code, typed into the page that asked for it (check()).
+// "link" — the email holds a link with a 256-bit token:
+//   - sign-in links sign the user in where the link is opened: the client starts a fresh authorization
+//     request there (OIDC initiate_login_uri) and the link is redeemed on it (inspectLink() then openLink());
 //   - verify-only links mark the address verified; the account page that asked notices by polling (poll()).
 
 import { randomInt, timingSafeEqual } from "node:crypto";
@@ -16,17 +17,20 @@ import type { EmailChallenge, EmailChallengePurpose, EmailChallengeReason, Email
 import type { AuthRepository } from "./repository.js";
 
 export interface EmailCodeSettings {
-  method: EmailVerificationMethod;
-  /** UI origin the links point to: <linkBaseUrl>/verify-email?id=…&token=… */
-  linkBaseUrl: string;
   ttlSec: number;
   /** Wrong codes allowed before the challenge is thrown away. */
   maxAttempts: number;
   resendCooldownSec: number;
   /** First send + resends. */
   maxSends: number;
-  /** Product name used in the emails. */
+  /** Product name used in emails not tied to a client (else the client's name). */
   appName: string;
+}
+
+/** Per-request bits of an email: which auth UI origin its links open. */
+export interface MailContext {
+  /** Origin of the login / account page making the request (allow-listed by the controller). */
+  uiOrigin: string;
 }
 
 /** What the client gets back while a code is pending (never the code itself). */
@@ -57,19 +61,26 @@ export class EmailCodeService {
   constructor(
     private readonly repo: AuthRepository,
     private readonly mailer: Mailer,
-    private readonly settings: EmailCodeSettings
+    private readonly settings: EmailCodeSettings,
+    /** client_name for emails sent on behalf of a client. */
+    private readonly clientName: (clientId: string) => Promise<string | undefined>
   ) {}
 
-  /** Creates a challenge and emails its code. */
-  async start(p: {
-    purpose: EmailChallengePurpose;
-    reason: EmailChallengeReason;
-    userId: string;
-    email: string;
-    authRequestId?: string;
-  }): Promise<PendingVerification> {
+  /** Creates a challenge and emails its code / link. */
+  async start(
+    p: {
+      purpose: EmailChallengePurpose;
+      reason: EmailChallengeReason;
+      method: EmailVerificationMethod;
+      userId: string;
+      email: string;
+      authRequestId?: string;
+      clientId?: string;
+    },
+    mail: MailContext
+  ): Promise<PendingVerification> {
     const id = randomToken(24);
-    const method = this.settings.method;
+    const method = p.method;
     const code = this.newSecret(method);
     const now = new Date();
     const challenge: EmailChallenge = {
@@ -84,15 +95,16 @@ export class EmailCodeService {
       sends: 1,
       sentAt: now,
       ...(p.authRequestId !== undefined ? { authRequestId: p.authRequestId } : {}),
+      ...(p.clientId !== undefined ? { clientId: p.clientId } : {}),
       expiresAt: expiresIn(this.settings.ttlSec * 1000)
     };
     await this.repo.emailChallenges.create(challenge);
-    await this.deliver(challenge, code, true);
+    await this.deliver(challenge, code, true, mail);
     return this.pending(challenge);
   }
 
   /** Emails a fresh code for the same challenge (the old code stops working). */
-  async resend(challengeId: string): Promise<PendingVerification> {
+  async resend(challengeId: string, mail: MailContext): Promise<PendingVerification> {
     const now = new Date();
     const stored = await this.repo.emailChallenges.findActive(challengeId, now);
     if (!stored) throw this.gone();
@@ -111,7 +123,7 @@ export class EmailCodeService {
       expiresAt: expiresIn(this.settings.ttlSec * 1000)
     };
     await this.repo.emailChallenges.replaceCode(next.id, next.codeHash, next.sentAt, next.expiresAt);
-    await this.deliver(next, code, false);
+    await this.deliver(next, code, false, mail);
     return this.pending(next);
   }
 
@@ -131,20 +143,44 @@ export class EmailCodeService {
 
   /**
    * Emailed link opened and confirmed (the person proved they can read the mailbox).
-   * - "signin": consumed and returned, for the caller to sign the user in on the authorization request of
-   *   the browser that opened the link (`forSignIn` = the caller has one). Bound to the token, not to the
-   *   original request: the password (or registration) was already checked when the link was sent.
+   * - "signin": consumed and returned, for the caller to sign the user in on `signInClientId`'s authorization
+   *   request in the browser that opened the link. Bound to the token and the client, not to the original
+   *   request: the password (or registration) was already checked when the link was sent.
    * - "verify": marked approved (kept for the account page's poll()); opening it twice is harmless.
    */
-  async openLink(challengeId: string, token: string, forSignIn: boolean): Promise<EmailChallenge> {
-    const stored = await this.repo.emailChallenges.findActive(challengeId, new Date());
-    if (!stored || this.methodOf(stored) !== "link") throw this.gone();
+  async openLink(challengeId: string, token: string, signInClientId?: string): Promise<EmailChallenge> {
+    const stored = await this.findLink(challengeId);
     if (stored.purpose === "signin") {
-      if (!forSignIn) throw new HttpError(400, "request_id is required for a sign-in link");
+      if (signInClientId === undefined) throw new HttpError(400, "request_id is required for a sign-in link");
+      if (stored.clientId !== undefined && stored.clientId !== signInClientId) {
+        throw new HttpError(400, "This link signs in to a different app", "invalid_request");
+      }
       await this.verifySecret(stored, token);
       if (!(await this.repo.emailChallenges.consume(stored.id))) throw this.gone();
       return stored;
     }
+    return this.approve(stored, token);
+  }
+
+  /**
+   * Link page, before any sign-in exists in this browser: checks the token without using it up
+   * (sign-in links), so the page can send the browser to the client to start one. Verify links are
+   * approved right away.
+   */
+  async inspectLink(challengeId: string, token: string): Promise<EmailChallenge> {
+    const stored = await this.findLink(challengeId);
+    if (stored.purpose === "verify") return this.approve(stored, token);
+    await this.verifySecret(stored, token);
+    return stored;
+  }
+
+  private async findLink(challengeId: string): Promise<EmailChallenge> {
+    const stored = await this.repo.emailChallenges.findActive(challengeId, new Date());
+    if (!stored || this.methodOf(stored) !== "link") throw this.gone();
+    return stored;
+  }
+
+  private async approve(stored: EmailChallenge, token: string): Promise<EmailChallenge> {
     if (stored.approvedAt) return stored; // opened twice: already done
     await this.verifySecret(stored, token);
     if (!(await this.repo.emailChallenges.approve(stored.id, new Date()))) throw this.gone();
@@ -228,8 +264,9 @@ export class EmailCodeService {
   }
 
   /** Sends the code / link. If the very first send fails the challenge is removed, since nobody can complete it. */
-  private async deliver(c: EmailChallenge, secret: string, first: boolean): Promise<void> {
-    const { appName, ttlSec } = this.settings;
+  private async deliver(c: EmailChallenge, secret: string, first: boolean, mail: MailContext): Promise<void> {
+    const { ttlSec } = this.settings;
+    const appName = (c.clientId && (await this.clientName(c.clientId).catch(() => undefined))) || this.settings.appName;
     const minutes = Math.round(ttlSec / 60);
     const expires = `It expires in ${minutes} minute${minutes === 1 ? "" : "s"}.`;
     const action = {
@@ -245,7 +282,7 @@ export class EmailCodeService {
     if (this.methodOf(c) === "link") {
       const params = new URLSearchParams({ id: c.id, token: secret });
       if (c.purpose === "signin") params.set("signin", "1"); // tells the page to start a sign-in first
-      const url = `${this.settings.linkBaseUrl}/verify-email?${params}`;
+      const url = `${mail.uiOrigin}/verify-email?${params}`;
       subject = c.reason === "login" ? `Sign in to ${appName}` : `Confirm your email for ${appName}`;
       text = [`Open this link to ${action}:`, "", url, "", expires, "", ignore].join("\n");
       html =

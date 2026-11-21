@@ -10,6 +10,7 @@ import type {
   AuthCode,
   AuthRequest,
   LocalizedProfile,
+  OAuthClient,
   AccountUpdate,
   RefreshToken,
   Role,
@@ -88,6 +89,7 @@ export class MongoAuthRepository implements AuthRepository {
   private readonly challenges$: Collection<Doc<WebAuthnChallenge>>;
   private readonly emailChallenges$: Collection<Doc<EmailChallenge>>;
   private readonly devices$: Collection<Doc<Device>>;
+  private readonly clients$: Collection<Doc<OAuthClient>>;
   private readonly authRequests$: Collection<Doc<AuthRequest>>;
   private readonly authCodes$: Collection<Doc<AuthCode>>;
   private readonly access$: Collection<Doc<AccessToken>>;
@@ -108,6 +110,7 @@ export class MongoAuthRepository implements AuthRepository {
     this.challenges$ = db.collection("webauthn_challenges");
     this.emailChallenges$ = db.collection("email_challenges");
     this.devices$ = db.collection("devices");
+    this.clients$ = db.collection("oauth_clients");
     this.authRequests$ = db.collection("auth_requests");
     this.authCodes$ = db.collection("auth_codes");
     this.access$ = db.collection("access_tokens");
@@ -274,6 +277,23 @@ export class MongoAuthRepository implements AuthRepository {
     delete: async (userId: string, id: string) => (await this.devices$.deleteOne({ _id: id, userId })).deletedCount > 0
   };
 
+  readonly clients = {
+    create: (c: OAuthClient) => this.insert(this.clients$, c, "Client"),
+    findById: async (id: string) => fromDoc<OAuthClient>(await this.clients$.findOne({ _id: id })),
+    list: async () => (await this.clients$.find({}).sort({ createdAt: 1 }).toArray()).map((d) => fromDoc<OAuthClient>(d)!),
+    update: async (c: OAuthClient) => {
+      const { _id, createdAt: _createdAt, ...rest } = toDoc(c);
+      const $unset: Record<string, ""> = {};
+      for (const k of ["secretHash", "clientUri", "initiateLoginUri"] as const) if (c[k] === undefined) $unset[k] = "";
+      const res = await this.clients$.updateOne(
+        { _id },
+        { $set: rest, ...(Object.keys($unset).length ? { $unset } : {}) } as never
+      );
+      return res.matchedCount > 0;
+    },
+    delete: async (id: string) => (await this.clients$.deleteOne({ _id: id })).deletedCount > 0
+  };
+
   readonly authRequests = {
     create: (r: AuthRequest) => this.insert(this.authRequests$, r, "Authorization request"),
     findActive: async (id: string, now: Date) =>
@@ -290,8 +310,11 @@ export class MongoAuthRepository implements AuthRepository {
   };
 
   readonly tokens = {
-    createPair: async (access: AccessToken, refresh: RefreshToken) => {
-      await Promise.all([this.insert(this.access$, access, "Access token"), this.insert(this.refresh$, refresh, "Refresh token")]);
+    createPair: async (access: AccessToken, refresh: RefreshToken | null) => {
+      await Promise.all([
+        this.insert(this.access$, access, "Access token"),
+        ...(refresh ? [this.insert(this.refresh$, refresh, "Refresh token")] : [])
+      ]);
     },
     findActiveAccess: async (id: string, now: Date) =>
       fromDoc<AccessToken>(await this.access$.findOne({ _id: id, expiresAt: { $gt: now } })),
@@ -309,6 +332,12 @@ export class MongoAuthRepository implements AuthRepository {
       await Promise.all([
         this.refresh$.updateMany({ userId, deviceId }, { $set: { revoked: true } }),
         this.access$.deleteMany({ userId, deviceId })
+      ]);
+    },
+    revokeClient: async (clientId: string) => {
+      await Promise.all([
+        this.refresh$.updateMany({ clientId }, { $set: { revoked: true } }),
+        this.access$.deleteMany({ clientId })
       ]);
     },
     activeDeviceIds: async (userId: string, now: Date) =>

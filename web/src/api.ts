@@ -66,7 +66,35 @@ export interface AccountUpdate {
   preferredLang?: string | null;
 }
 
-export type SignInMethod = "password" | "password+email_code" | "passkey" | "registration";
+export type SignInMethod = "password" | "password+email_code" | "password+email_link" | "passkey" | "registration";
+
+/** OAuth client as /admin/clients returns it (RFC 7591 metadata names + this server's extensions). */
+export interface OAuthClient {
+  client_id: string;
+  client_name: string;
+  client_id_issued_at: number;
+  /** Only right after creating it / rotating the secret. */
+  client_secret?: string;
+  token_endpoint_auth_method: "none" | "client_secret_basic" | "client_secret_post";
+  redirect_uris: string[];
+  grant_types: ("authorization_code" | "refresh_token")[];
+  scope: string;
+  client_uri?: string;
+  initiate_login_uri?: string;
+  access_token_lifetime: number;
+  refresh_token_lifetime: number;
+  id_token_lifetime: number;
+  email_verification: "code" | "link";
+  updated_at: number;
+}
+
+/** What the create / edit form sends (RFC 7591 client metadata). */
+export type OAuthClientInput = Omit<OAuthClient, "client_id_issued_at" | "client_secret" | "updated_at" | "client_id"> & {
+  client_id?: string;
+};
+
+/** Scopes this server supports (see /.well-known/openid-configuration). */
+export const SCOPES = ["openid", "profile", "email", "secrets"] as const;
 
 /** A browser the user signed in from. */
 export interface Device {
@@ -98,6 +126,48 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 const path = (name: string) => `/secrets/${encodeURIComponent(name)}`;
+
+/** Client management calls, for either a signed-in admin (Bearer) or the master credential (Basic). */
+export interface ClientsApi {
+  list(): Promise<OAuthClient[]>;
+  create(input: OAuthClientInput): Promise<OAuthClient>;
+  update(id: string, input: OAuthClientInput): Promise<OAuthClient>;
+  rotateSecret(id: string): Promise<OAuthClient>;
+  remove(id: string): Promise<null>;
+}
+
+function clientsApi(send: <T>(path: string, init?: RequestInit) => Promise<T>): ClientsApi {
+  const one = (id: string) => `/admin/clients/${encodeURIComponent(id)}`;
+  return {
+    list: async () => (await send<{ clients: OAuthClient[] }>("/admin/clients")).clients,
+    create: (input) => send<OAuthClient>("/admin/clients", { method: "POST", body: JSON.stringify(input) }),
+    update: (id, input) => send<OAuthClient>(one(id), { method: "PUT", body: JSON.stringify(input) }),
+    rotateSecret: (id) => send<OAuthClient>(`${one(id)}/secret`, { method: "POST" }),
+    remove: (id) => send<null>(one(id), { method: "DELETE" })
+  };
+}
+
+/** As the signed-in admin user. */
+export const userClientsApi: ClientsApi = clientsApi(request);
+
+/** base64("username:password") (UTF-8 safe), as MASTER_CREDENTIALS and the Basic header carry it. */
+export const basicCredentials = (username: string, password: string) =>
+  btoa(String.fromCharCode(...new TextEncoder().encode(`${username}:${password}`)));
+
+/** As the master credential (MASTER_CREDENTIALS), sent as HTTP Basic — no user sign-in involved. */
+export function masterClientsApi(credentials: string): ClientsApi {
+  return clientsApi(async <T,>(p: string, init?: RequestInit) => {
+    const res = await fetch(p, {
+      ...init,
+      headers: { Authorization: `Basic ${credentials}`, ...(init?.body ? { "Content-Type": "application/json" } : {}) }
+    });
+    if (!res.ok) {
+      const body = (await res.json().catch(() => ({}))) as { error?: string; error_description?: string };
+      throw new Error(body.error_description ?? body.error ?? `Request failed (${res.status})`);
+    }
+    return (res.status === 204 ? null : await res.json()) as T;
+  });
+}
 
 export const api = {
   health: async () => (await fetch("/health")).json() as Promise<{ status: string; provider: string }>,

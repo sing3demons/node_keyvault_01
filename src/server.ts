@@ -8,7 +8,8 @@ import { KeyVaultController } from "./keyvault/controller.js";
 import { AzureKeyVaultSecretStore, NamedSecret } from "./keyvault/store.js";
 import { createSecretAclRepository } from "./keyvault/repositories/index.js";
 import { createAuthRepository } from "./auth/repositories/index.js";
-import { AuthService } from "./auth/service.js";
+import { AuthService, SUPPORTED_SCOPES } from "./auth/service.js";
+import { ClientService } from "./auth/clients.js";
 import { IdTokenIssuer, SigningKeyRing } from "./auth/oidc.js";
 import { Argon2idHasher, SecretHasher } from "./shared/hashing.js";
 import { WebAuthnService } from "./auth/webauthn.js";
@@ -16,7 +17,7 @@ import { EmailCodeService } from "./auth/email-codes.js";
 import { DeviceService } from "./auth/devices.js";
 import { createMailer } from "./shared/mail.js";
 import { AuthController } from "./auth/controller.js";
-import { requireAuth, requireRole, type AuthEnv } from "./shared/middleware.js";
+import { MasterCredential, requireAuth, requireRole, requireRoleOrMaster, type AuthEnv } from "./shared/middleware.js";
 
 async function main() {
   const azureVaultUrl: string = process.env.AZURE_KEYVAULT_URL as string;
@@ -48,14 +49,35 @@ async function main() {
   const signingKeys = new SigningKeyRing(new NamedSecret(keyVaultSecretStore, config.oidc.keysSecretName), config.oidc);
   await signingKeys.init();
   const idTokens = new IdTokenIssuer(config.oidc, signingKeys);
-  const emailCodes = new EmailCodeService(authRepo, createMailer(config.mail), {
-    ...config.emailCodes,
-    appName: config.webauthn.rpName
+  // OAuth clients (RFC 7591 metadata + per-client token lifetimes / email method) live in the auth DB
+  const clients = new ClientService(authRepo, {
+    defaults: config.clientDefaults,
+    maxIdTokenTtlSec: config.oidc.retiredKeyGraceSec,
+    supportedScopes: SUPPORTED_SCOPES
   });
+  await clients.seed({
+    id: config.defaultClient.id,
+    name: config.webauthn.rpName,
+    tokenEndpointAuthMethod: "none", // the React UI is a public client (PKCE)
+    redirectUris: config.defaultClient.redirectUris,
+    grantTypes: ["authorization_code", "refresh_token"],
+    scope: [...SUPPORTED_SCOPES].sort().join(" "),
+    // emailed sign-in links send the browser here; the UI then starts a fresh sign-in
+    initiateLoginUri: `${new URL(config.defaultClient.redirectUris[0]!).origin}/`,
+    ...config.clientDefaults,
+    idTokenTtlSec: Math.min(config.clientDefaults.idTokenTtlSec, config.oidc.retiredKeyGraceSec),
+    emailVerification: config.defaultClient.emailVerification
+  });
+  const emailCodes = new EmailCodeService(
+    authRepo,
+    createMailer(config.mail),
+    { ...config.emailCodes, appName: config.webauthn.rpName },
+    async (clientId) => (await clients.find(clientId))?.name
+  );
   const authService = new AuthService(
     authRepo,
     new SecretHasher(new Argon2idHasher()),
-    config.oauth,
+    clients,
     idTokens,
     emailCodes,
     new DeviceService(authRepo),
@@ -63,7 +85,7 @@ async function main() {
   );
   await authService.bootstrapAdmins();
   const webAuthnService = new WebAuthnService(authRepo, config.webauthn);
-  const auth = new AuthController(authService, webAuthnService, idTokens, config.trustProxy);
+  const auth = new AuthController(authService, webAuthnService, idTokens, clients, config.webauthn.origins, config.trustProxy);
   const bearer = requireAuth(authService);
 
   const app = new Hono<AuthEnv>();
@@ -91,7 +113,8 @@ async function main() {
   // emailed codes: registration, sign-in with an email address, verifying an address
   app.post("/auth/email/verify", (c) => auth.confirmEmailCode(c));
   app.post("/auth/email/resend", (c) => auth.resendEmailCode(c));
-  app.post("/auth/email/link", (c) => auth.openEmailLink(c)); // EMAIL_VERIFICATION=link
+  app.post("/auth/email/link", (c) => auth.openEmailLink(c)); // clients with email_verification=link
+  app.post("/auth/email/link/resume", (c) => auth.resumeEmailLink(c));
   app.post("/auth/email/status", (c) => auth.emailChallengeStatus(c));
   app.post("/auth/me/email/verification", bearer, (c) => auth.startEmailVerification(c));
   // devices the user signed in from
@@ -108,9 +131,21 @@ async function main() {
   app.delete("/auth/webauthn/credentials/:id", bearer, (c) => auth.deletePasskey(c));
 
   // --- Administration
-  app.use("/admin/*", bearer, requireRole("admin"));
+  app.use("/admin/users", bearer, requireRole("admin"));
+  app.use("/admin/users/*", bearer, requireRole("admin"));
   app.get("/admin/users", (c) => auth.listUsers(c));
   app.put("/admin/users/:username/roles", (c) => auth.setUserRoles(c));
+  // OAuth clients (RFC 7591 metadata; RFC 7592-style read / update / delete):
+  // an admin user's Bearer token, or the master credential (MASTER_CREDENTIALS) as HTTP Basic
+  const clientAdmin = requireRoleOrMaster(authService, "admin", config.master);
+  app.use("/admin/clients", clientAdmin);
+  app.use("/admin/clients/*", clientAdmin);
+  app.get("/admin/clients", (c) => auth.listClients(c));
+  app.post("/admin/clients", (c) => auth.registerClient(c));
+  app.get("/admin/clients/:id", (c) => auth.getClient(c));
+  app.put("/admin/clients/:id", (c) => auth.updateClient(c));
+  app.delete("/admin/clients/:id", (c) => auth.deleteClient(c));
+  app.post("/admin/clients/:id/secret", (c) => auth.rotateClientSecret(c));
 
   // --- Secrets (protected)
   app.use("/secrets", bearer);

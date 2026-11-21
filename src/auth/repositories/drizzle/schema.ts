@@ -1,5 +1,10 @@
 import { sql } from "drizzle-orm";
-import { SIGN_IN_METHODS } from "../../model.js";
+import {
+  CLIENT_GRANT_TYPES,
+  EMAIL_VERIFICATION_METHODS,
+  SIGN_IN_METHODS,
+  TOKEN_ENDPOINT_AUTH_METHODS
+} from "../../model.js";
 import { boolean, check, index, integer, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 const ts = (name: string) => timestamp(name, { withTimezone: true, mode: "date" });
@@ -96,6 +101,7 @@ export const emailChallenges = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     email: text("email").notNull(),
+    clientId: text("client_id"),
     codeHash: text("code_hash").notNull(),
     approvedAt: ts("approved_at"),
     attempts: integer("attempts").notNull().default(0),
@@ -127,6 +133,25 @@ export const devices = pgTable(
   },
   (t) => [uniqueIndex("devices_user_key_idx").on(t.userId, t.keyHash), index("devices_user_seen_idx").on(t.userId, t.lastSeenAt)]
 );
+
+/** Registered OAuth clients (RFC 7591 metadata + per-client settings). */
+export const oauthClients = pgTable("oauth_clients", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  tokenEndpointAuthMethod: text("token_endpoint_auth_method", { enum: TOKEN_ENDPOINT_AUTH_METHODS }).notNull(),
+  secretHash: text("secret_hash"),
+  redirectUris: text("redirect_uris").array().notNull(),
+  grantTypes: text("grant_types", { enum: CLIENT_GRANT_TYPES }).array().notNull(),
+  scope: text("scope").notNull(),
+  clientUri: text("client_uri"),
+  initiateLoginUri: text("initiate_login_uri"),
+  accessTokenTtlSec: integer("access_token_ttl_sec").notNull(),
+  refreshTokenTtlSec: integer("refresh_token_ttl_sec").notNull(),
+  idTokenTtlSec: integer("id_token_ttl_sec").notNull(),
+  emailVerification: text("email_verification", { enum: EMAIL_VERIFICATION_METHODS }).notNull(),
+  createdAt: ts("created_at").notNull(),
+  updatedAt: ts("updated_at").notNull()
+});
 
 export const authRequests = pgTable(
   "auth_requests",

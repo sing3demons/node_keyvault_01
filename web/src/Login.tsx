@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   confirmSignInCode,
+  emailLinkPending,
   openEmailLink,
-  signInWithEmailLink,
-  clearEmailLink,
-  peekEmailLink,
+  resumeEmailLink,
   handleCallback,
   loginWithPasskey,
   loginWithPassword,
@@ -18,7 +17,7 @@ import { LANGUAGES } from "./api";
 import { EmailCodeForm } from "./components";
 import { LockIcon } from "./icons";
 
-function Shell({ title, sub, children }: { title: string; sub: string; children: React.ReactNode }) {
+export function Shell({ title, sub, children }: { title: string; sub: string; children: React.ReactNode }) {
   return (
     <div className="wrap auth-wrap">
       <div className="brand auth-brand">
@@ -50,20 +49,15 @@ export function LoginPage() {
   const [error, setError] = useState("");
   /** Set when the server wants the code it emailed before signing in. */
   const [verify, setVerify] = useState<PendingVerification | null>(null);
-  /** This tab came from an emailed sign-in link (VerifyEmailPage): redeem it on this request. */
-  const [fromLink] = useState(() => (requestId ? peekEmailLink() : null));
+  /** An emailed sign-in link was opened in this browser (VerifyEmailPage): finish it on this request. */
+  const [fromLink] = useState(() => !!requestId && emailLinkPending());
   const linkRedeemed = useRef(false); // StrictMode runs effects twice; the link is single use
 
   // runs after render, when `run` (below) is defined
   useEffect(() => {
     if (!fromLink || !requestId || linkRedeemed.current) return;
     linkRedeemed.current = true;
-    clearEmailLink();
-    run(async () => {
-      const r = await openEmailLink(fromLink.challengeId, fromLink.token, requestId);
-      if ("redirect" in r) return r;
-      throw new Error("Email verified — please sign in");
-    });
+    run(() => resumeEmailLink(requestId));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -276,9 +270,10 @@ function restartIfRequestExpired(e: unknown) {
 }
 
 /**
- * /verify-email?id=…&token=…[&signin=1] — opened from the emailed link (EMAIL_VERIFICATION=link).
- * Sign-in links: this tab starts its own sign-in and the login page redeems the link, so the user ends up
- * signed in right here. Needs a click so mail scanners that open links cannot sign in on their own.
+ * /verify-email?id=…&token=…[&signin=1] — opened from the emailed link (client email_verification=link).
+ * Sign-in links send the browser to the app (its initiate_login_uri), which starts a sign-in that the login
+ * page completes with the link — so the user ends up signed in to that app right here. Needs a click so mail
+ * scanners that open links cannot sign in on their own.
  */
 export function VerifyEmailPage() {
   const q = new URLSearchParams(location.search);
@@ -291,9 +286,11 @@ export function VerifyEmailPage() {
   const confirm = async () => {
     if (!id || !token) return;
     setState("busy");
-    if (signIn) return signInWithEmailLink(id, token); // -> /oauth/authorize -> /login -> /callback
     try {
-      await openEmailLink(id, token);
+      const r = await openEmailLink(id, token);
+      // sign-in link: the app starts a sign-in (continue) or we are signed in already (redirect)
+      if ("continue" in r) return location.assign(r.continue);
+      if ("redirect" in r) return location.assign(r.redirect);
       setState("verified");
     } catch (e) {
       setError((e as Error).message);
