@@ -7,10 +7,6 @@ import { KeyVaultService } from "./keyvault/service.js";
 import { KeyVaultHandler } from "./keyvault/handle.js";
 import { AzureKeyVaultSecretStore } from "./keyvault/store.js";
 
- 
-function getErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "Unknown error";
-}
 
 function getErrorStatusCode(error: unknown): ContentfulStatusCode {
   if (typeof error === "object" && error !== null && "statusCode" in error) {
@@ -31,9 +27,11 @@ async function main() {
 
   const app = new Hono();
 
-  app.onError((error, c) => c.json({ message: getErrorMessage(error) }, getErrorStatusCode(error)));
+  app.onError((error, c) => c.json({
+    message: error instanceof Error ? error.message : "Unknown error"
+  }, getErrorStatusCode(error)));
 
-  app.get("/health", (c) => c.json({ status: "ok", provider: config.secretProvider }));
+  app.get("/health", (c) => c.json({ status: "ok" }));
 
   app.get("/secrets", keyVaultHandler.getSecrets.bind(keyVaultHandler));
 
@@ -47,9 +45,8 @@ async function main() {
   app.use("/*", serveStatic({ root: "./dist/public" }));
 
   serve({ fetch: app.fetch, port: config.port }, (info) => {
-    console.log(`Server is running on port ${info.port} with provider=${config.secretProvider}`);
+    console.log(`Server is running on port ${info.port}`);
   });
-
 }
 
 main();
