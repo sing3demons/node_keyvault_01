@@ -16,6 +16,7 @@ docker compose up --build
 
 - App: `http://localhost:3000`
 - Azure Key Vault emulator ([Lowkey Vault](https://github.com/nagyesta/lowkey-vault)): `https://localhost:8443` (self-signed cert)
+- Mailpit (กล่องรับ email ทดสอบ — รหัสยืนยัน): `http://localhost:8025`
 
 ใน compose แอพจะใช้ `SECRET_PROVIDER=azure` คุยกับ emulator ผ่าน Azure SDK ตัวจริง (token มาจาก managed identity endpoint ปลอมที่ port 8080)
 
@@ -43,7 +44,7 @@ curl -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" http://localhost:3000/se
 ```bash
 pnpm install
 cp .env.example .env
-docker compose up -d keyvault mongo   # รัน emulator + MongoDB (หรือ postgres ถ้า AUTH_DB=postgres)
+docker compose up -d keyvault mongo mailpit   # emulator + MongoDB (หรือ postgres ถ้า AUTH_DB=postgres) + Mailpit
 pnpm dev                        # API :3000 + UI (Vite) http://localhost:5173
 ```
 
@@ -96,6 +97,21 @@ type Credential =
 - password ที่ `algorithm` ไม่ใช่ argon2id (เช่น import มาจากระบบอื่น) จะถูก verify แล้ว upgrade เป็น argon2id ตอน login — เพิ่มตัว verify ได้ที่ [src/shared/hashing.ts](src/shared/hashing.ts)
 - ลบ credential สุดท้ายของ user ไม่ได้
 
+**ยืนยัน email (รหัส 6 หลัก)**
+
+- สมัครสมาชิก → ส่งรหัสไปที่ email → กรอกรหัสในหน้า login แล้วเข้าระบบเลย (`Account.emailVerified`, claim `email_verified`)
+- login ด้วย **email + password** → ต้องกรอกรหัสที่ส่งไป email ทุกครั้ง; login ด้วย **username + password** → ไม่ต้อง ยกเว้น email ยังไม่ได้ยืนยัน (เช่น บัญชีเก่า) จะให้ยืนยันก่อน
+- เปลี่ยน email ใน Account → กลับเป็นยังไม่ยืนยัน กด "Send verification code" เพื่อยืนยันใหม่
+- รหัสเก็บเป็น SHA-256 เท่านั้น, อายุ `EMAIL_CODE_TTL` (10 นาที), ผิดได้ `EMAIL_CODE_MAX_ATTEMPTS` ครั้ง, ส่งซ้ำได้ทุก `EMAIL_CODE_RESEND_COOLDOWN` วินาที
+- ส่งผ่าน SMTP (`SMTP_URL`, `MAIL_FROM`); ไม่ตั้ง `SMTP_URL` = พิมพ์รหัสลง log ของ server (dev เท่านั้น)
+
+**Devices (อุปกรณ์ที่เคย login)**
+
+- ทุกครั้งที่ login สำเร็จ (password / passkey / รหัส email) จะบันทึกอุปกรณ์: browser + OS (จาก User-Agent), IP, วันที่ login ครั้งแรก/ล่าสุด, ใช้งานล่าสุด (อัปเดตตอน refresh token), วิธี login, จำนวนครั้ง
+- จำอุปกรณ์ด้วย cookie `kv_device` (httpOnly, path `/auth`, ค่าสุ่ม เก็บใน DB เป็น hash) — token ที่ออกให้ผูกกับอุปกรณ์นั้น
+- ปุ่ม "Devices" ใน UI: ดูรายการ, "Sign out" (revoke token ของอุปกรณ์นั้น แต่เก็บประวัติไว้), ถังขยะ (sign out + ลบออกจากรายการ); อุปกรณ์ที่ใช้อยู่ให้ใช้ Log out
+- อยู่หลัง reverse proxy ให้ตั้ง `TRUST_PROXY=true` เพื่อให้ IP มาจาก `X-Forwarded-For`
+
 โค้ด auth ทั้งหมดคุยผ่าน `AuthRepository` ([src/auth/repository.ts](src/auth/repository.ts)) — เพิ่ม DB ใหม่ได้โดย implement interface นี้ใน `src/auth/repositories/` แล้วเพิ่มใน `createAuthRepository()`
 
 แก้ schema Postgres ที่ `src/auth/repositories/drizzle/schema.ts` แล้วรัน `pnpm db:generate` เพื่อสร้าง migration ใหม่ (`pnpm db:studio` เปิด Drizzle Studio)
@@ -118,8 +134,11 @@ Flow: UI → `GET /oauth/authorize` → redirect ไป `/login?request_id=…` 
 - `GET /health`
 - `GET /.well-known/openid-configuration` · `GET /.well-known/jwks.json`
 - `GET /oauth/authorize` · `POST /oauth/token` · `POST /oauth/revoke` · `GET /oauth/userinfo` (Bearer)
-- `POST /auth/register` (`username`, `email`, `password`, `profiles`, `preferredLang?`) · `POST /auth/login/password`
-- `GET /auth/me` · `PATCH /auth/me` (Bearer)
+- `POST /auth/register` (`username`, `email`, `password`, `profiles`, `preferredLang?`, `request_id?`) → account + `verification` (ส่งรหัสไป email แล้ว)
+- `POST /auth/login/password` (`username` = username หรือ email) → `{ redirect }` หรือ `{ verify }` (ต้องกรอกรหัสจาก email ต่อ)
+- `POST /auth/email/verify` (`challengeId`, `code`, `request_id?`) → `{ redirect }` (ขั้น login) หรือ `{ verified: true }` · `POST /auth/email/resend` (`challengeId`)
+- `GET /auth/me` · `PATCH /auth/me` · `POST /auth/me/email/verification` (Bearer)
+- `GET /auth/me/devices` · `POST /auth/me/devices/:id/sign-out` · `DELETE /auth/me/devices/:id` (Bearer)
 - `POST /auth/webauthn/login/options` · `POST /auth/webauthn/login/verify`
 - `POST /auth/webauthn/register/options` · `POST /auth/webauthn/register/verify` · `GET/DELETE /auth/webauthn/credentials` (Bearer)
 

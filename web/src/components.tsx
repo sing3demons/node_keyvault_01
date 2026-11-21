@@ -1,5 +1,17 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { api, LANGUAGES, PERMISSIONS, type Account, type AdminUser, type Grant, type Permission, type SecretSummary } from "./api";
+import {
+  api,
+  LANGUAGES,
+  PERMISSIONS,
+  type Account,
+  type AdminUser,
+  type Device,
+  type Grant,
+  type Permission,
+  type SecretSummary,
+  type SignInMethod
+} from "./api";
+import { confirmEmailCode, resendEmailCode, type PendingVerification } from "./auth";
 import { CopyIcon, EditIcon, EyeIcon, EyeOffIcon, LockIcon, ShareIcon, TransferIcon, TrashIcon } from "./icons";
 
 const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
@@ -36,6 +48,97 @@ function Modal({ open, onClose, children }: { open: boolean; onClose: () => void
     <dialog ref={ref} onClose={onClose} onClick={(e) => e.target === ref.current && onClose()}>
       {open && children}
     </dialog>
+  );
+}
+
+/* ---------- emailed one-time code ---------- */
+
+interface CodeFormProps {
+  pending: PendingVerification;
+  submitLabel: string;
+  /** Throw to show an error; resolve when done. */
+  onConfirm: (code: string) => Promise<void>;
+  onCancel?: () => void;
+  cancelLabel?: string;
+}
+
+/** "Enter the 6-digit code we sent to s•••@example.com", with a resend button that honours the cooldown. */
+export function EmailCodeForm({ pending: initial, submitLabel, onConfirm, onCancel, cancelLabel = "Back" }: CodeFormProps) {
+  const [pending, setPending] = useState(initial);
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const wait = Math.max(0, Math.ceil((new Date(pending.resendAt).getTime() - now) / 1000));
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      await onConfirm(code);
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+    }
+  };
+
+  const resend = async () => {
+    setError("");
+    setNotice("");
+    try {
+      setPending(await resendEmailCode(pending.challengeId));
+      setCode("");
+      setNotice("A new code is on its way.");
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+
+  return (
+    <form className="dlg-body" onSubmit={submit}>
+      <p>
+        {pending.reason === "login" ? "To finish signing in, enter" : "To confirm your email address, enter"} the 6-digit code
+        we sent to <strong>{pending.email}</strong>.
+      </p>
+      <label>
+        Code
+        <input
+          className="code-input"
+          value={code}
+          onChange={(e) => setCode(e.target.value.replace(/[^\d]/g, "").slice(0, 6))}
+          inputMode="numeric"
+          autoComplete="one-time-code"
+          pattern="\d{6}"
+          maxLength={6}
+          autoFocus
+          required
+        />
+        <span className="hint">Expires {timeAgo(pending.expiresAt)}. Check your spam folder if it has not arrived.</span>
+      </label>
+      <div className="error-text">{error}</div>
+      {notice && !error && <div className="hint">{notice}</div>}
+      <button className="btn-primary auth-submit" type="submit" disabled={busy || code.length !== 6}>
+        {busy ? "Checking…" : submitLabel}
+      </button>
+      <div className="code-actions">
+        <button type="button" className="btn-ghost" onClick={resend} disabled={busy || wait > 0}>
+          {wait > 0 ? `Resend code (${wait}s)` : "Resend code"}
+        </button>
+        {onCancel && (
+          <button type="button" className="btn-ghost" onClick={onCancel} disabled={busy}>
+            {cancelLabel}
+          </button>
+        )}
+      </div>
+    </form>
   );
 }
 
@@ -319,19 +422,51 @@ interface AccountProps {
   open: boolean;
   onClose: () => void;
   onSaved: (account: Account) => void;
+  /** The email was verified (dialog stays open). */
+  onVerified: (account: Account) => void;
 }
 
-export function AccountDialog({ account, open, onClose, onSaved }: AccountProps) {
+export function AccountDialog({ account, open, onClose, onSaved, onVerified }: AccountProps) {
+  const [verifying, setVerifying] = useState<PendingVerification | null>(null);
+  const close = () => {
+    setVerifying(null);
+    onClose();
+  };
   return (
-    <Modal open={open && !!account} onClose={onClose}>
-      {account && <AccountForm key={account.id} account={account} onClose={onClose} onSaved={onSaved} />}
+    <Modal open={open && !!account} onClose={close}>
+      {account &&
+        (verifying ? (
+          <div>
+            <div className="dlg-body">
+              <h2>Verify email</h2>
+            </div>
+            <EmailCodeForm
+              pending={verifying}
+              submitLabel="Verify"
+              cancelLabel="Cancel"
+              onCancel={() => setVerifying(null)}
+              onConfirm={async (code) => {
+                await confirmEmailCode(verifying.challengeId, code);
+                setVerifying(null);
+                onVerified(await api.me());
+              }}
+            />
+          </div>
+        ) : (
+          <AccountForm key={account.id} account={account} onClose={close} onSaved={onSaved} onVerify={setVerifying} />
+        ))}
     </Modal>
   );
 }
 
 type ProfileDraft = { lang: string; label: string; firstName: string; lastName: string };
 
-function AccountForm({ account, onClose, onSaved }: { account: Account } & Pick<AccountProps, "onClose" | "onSaved">) {
+function AccountForm({
+  account,
+  onClose,
+  onSaved,
+  onVerify
+}: { account: Account; onVerify: (pending: PendingVerification) => void } & Pick<AccountProps, "onClose" | "onSaved">) {
   // one row per UI language, plus any other language the API already has
   const initial: ProfileDraft[] = [
     ...LANGUAGES.map(({ code, label }) => {
@@ -347,6 +482,20 @@ function AccountForm({ account, onClose, onSaved }: { account: Account } & Pick<
   const [preferred, setPreferred] = useState(account.preferredLang ?? "");
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const [sending, setSending] = useState(false);
+  const emailUnchanged = email.trim().toLowerCase() === (account.email ?? "");
+
+  const sendCode = async () => {
+    setSending(true);
+    setError("");
+    try {
+      onVerify(await api.startEmailVerification());
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSending(false);
+    }
+  };
 
   const filled = rows.filter((r) => r.firstName.trim() && r.lastName.trim());
   const setRow = (lang: string, field: "firstName" | "lastName", value: string) =>
@@ -381,9 +530,24 @@ function AccountForm({ account, onClose, onSaved }: { account: Account } & Pick<
       <div className="dlg-body">
         <h2>Account</h2>
         <label>
-          Email
+          <span>
+            Email
+            {account.email && emailUnchanged && (
+              <span className={`badge ${account.emailVerified ? "badge-ok" : "badge-warn"}`}>
+                {account.emailVerified ? "Verified" : "Not verified"}
+              </span>
+            )}
+          </span>
           <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" />
+          {!emailUnchanged && email.trim() && (
+            <span className="hint">After saving you will need to verify the new address.</span>
+          )}
         </label>
+        {account.email && emailUnchanged && !account.emailVerified && (
+          <button type="button" className="btn-ghost" onClick={sendCode} disabled={sending}>
+            {sending ? "Sending…" : "Send verification code"}
+          </button>
+        )}
         {rows.map((r) => (
           <div className="name-row" key={r.lang}>
             <label>
@@ -660,6 +824,112 @@ function UsersPanel({ currentUserId, onClose }: { currentUserId?: string; onClos
                   <input type="checkbox" checked={u.roles.includes("admin")} disabled={busy !== null} onChange={() => toggleAdmin(u)} />
                   Admin{u.id === currentUserId ? " (you)" : ""}
                 </label>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="error-text">{error}</div>
+      </div>
+      <div className="dlg-foot">
+        <button type="button" className="btn-ghost" onClick={onClose}>
+          Done
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- devices the user signed in from ---------- */
+
+const METHOD_LABELS: Record<SignInMethod, string> = {
+  password: "Password",
+  "password+email_code": "Password + email code",
+  passkey: "Passkey",
+  registration: "Registration"
+};
+
+export function DevicesDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  return (
+    <Modal open={open} onClose={onClose}>
+      {open && <DevicesPanel onClose={onClose} />}
+    </Modal>
+  );
+}
+
+function DevicesPanel({ onClose }: { onClose: () => void }) {
+  const [devices, setDevices] = useState<Device[] | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+
+  const load = () =>
+    api
+      .devices()
+      .then(setDevices)
+      .catch((e: Error) => setError(e.message));
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const act = async (d: Device, action: "signOut" | "remove") => {
+    if (action === "remove" && !confirm(`Sign out “${d.name}” and remove it from this list?`)) return;
+    setBusy(d.id);
+    setError("");
+    try {
+      if (action === "signOut") await api.signOutDevice(d.id);
+      else await api.removeDevice(d.id);
+      await load();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div>
+      <div className="dlg-body">
+        <h2>Devices</h2>
+        <p className="hint">Browsers that have signed in to your account. Don’t recognize one? Sign it out and change your password.</p>
+        {devices === null ? (
+          <div className="skeleton" />
+        ) : devices.length === 0 ? (
+          <p className="hint">No sign-ins recorded yet.</p>
+        ) : (
+          <div className="device-list">
+            {devices.map((d) => (
+              <div className="device-row" key={d.id}>
+                <div className="device-main">
+                  <div>
+                    <strong>{d.name}</strong>
+                    {d.current ? (
+                      <span className="badge badge-ok">This device</span>
+                    ) : d.active ? (
+                      <span className="badge">Signed in</span>
+                    ) : (
+                      <span className="badge">Signed out</span>
+                    )}
+                  </div>
+                  <div className="hint" title={d.userAgent}>
+                    Last active {timeAgo(d.lastSeenAt)}
+                    {d.ip ? ` · ${d.ip}` : ""} · {METHOD_LABELS[d.lastMethod] ?? d.lastMethod}
+                  </div>
+                  <div className="hint">
+                    First sign-in {new Date(d.firstSignInAt).toLocaleString()} · {d.signIns} sign-in{d.signIns === 1 ? "" : "s"}
+                  </div>
+                </div>
+                {!d.current && (
+                  <div className="device-actions">
+                    {d.active && (
+                      <button className="btn-ghost" disabled={busy !== null} onClick={() => act(d, "signOut")}>
+                        Sign out
+                      </button>
+                    )}
+                    <button className="btn-ghost" disabled={busy !== null} onClick={() => act(d, "remove")} title="Sign out and forget">
+                      <TrashIcon />
+                    </button>
+                  </div>
+                )}
               </div>
             ))}
           </div>

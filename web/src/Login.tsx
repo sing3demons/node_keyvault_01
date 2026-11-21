@@ -1,6 +1,17 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { handleCallback, loginWithPasskey, loginWithPassword, passkeysSupported, register, startLogin } from "./auth";
+import {
+  confirmSignInCode,
+  handleCallback,
+  loginWithPasskey,
+  loginWithPassword,
+  passkeysSupported,
+  register,
+  startLogin,
+  type PendingVerification,
+  type SignInStep
+} from "./auth";
 import { LANGUAGES } from "./api";
+import { EmailCodeForm } from "./components";
 import { LockIcon } from "./icons";
 
 function Shell({ title, sub, children }: { title: string; sub: string; children: React.ReactNode }) {
@@ -33,6 +44,8 @@ export function LoginPage() {
   const [lang, setLang] = useState<string>(LANGUAGES[0].code);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  /** Set when the server wants the code it emailed before signing in. */
+  const [verify, setVerify] = useState<PendingVerification | null>(null);
 
   if (!requestId) {
     return (
@@ -47,12 +60,19 @@ export function LoginPage() {
     );
   }
 
-  const run = async (fn: () => Promise<{ redirect: string }>) => {
+  const run = async (fn: () => Promise<SignInStep>) => {
     setBusy(true);
     setError("");
     try {
-      const { redirect } = await fn();
-      location.assign(redirect);
+      const step = await fn();
+      if ("verify" in step) {
+        setVerify(step.verify);
+        setPassword("");
+        setConfirm("");
+        setBusy(false);
+        return;
+      }
+      location.assign(step.redirect);
     } catch (e) {
       const message = (e as Error).message;
       setError(message);
@@ -69,8 +89,14 @@ export function LoginPage() {
     if (mode === "register") {
       if (password !== confirm) return setError("Passwords do not match");
       return run(async () => {
-        await register({ username, email, password, profiles: [{ lang, firstName, lastName }], preferredLang: lang });
-        return loginWithPassword(requestId, username, password);
+        const { verification } = await register(requestId, {
+          username,
+          email,
+          password,
+          profiles: [{ lang, firstName, lastName }],
+          preferredLang: lang
+        });
+        return { verify: verification };
       });
     }
     run(() => loginWithPassword(requestId, username, password));
@@ -80,6 +106,34 @@ export function LoginPage() {
     setMode(m);
     setError("");
   };
+
+  if (verify) {
+    return (
+      <Shell title={verify.reason === "login" ? "Check your email" : "Verify your email"} sub="Key Vault Secrets">
+        <EmailCodeForm
+          pending={verify}
+          submitLabel={verify.reason === "register" ? "Verify & sign in" : "Continue"}
+          cancelLabel={verify.reason === "register" ? "Sign in later" : "Use a different account"}
+          onCancel={() => {
+            setVerify(null);
+            setMode("signin");
+            setError("");
+          }}
+          onConfirm={async (code) => {
+            try {
+              const { redirect } = await confirmSignInCode(requestId, verify.challengeId, code);
+              location.assign(redirect);
+            } catch (e) {
+              if (/expired or not found — please start sign-in again/i.test((e as Error).message)) {
+                setTimeout(() => startLogin(), 1200);
+              }
+              throw e;
+            }
+          }}
+        />
+      </Shell>
+    );
+  }
 
   return (
     <Shell title={mode === "signin" ? "Sign in" : "Create account"} sub="Key Vault Secrets">
@@ -93,7 +147,7 @@ export function LoginPage() {
       </div>
       <form className="dlg-body" onSubmit={onSubmit}>
         <label>
-          Username
+          {mode === "signin" ? "Username or email" : "Username"}
           <input
             value={username}
             onChange={(e) => setUsername(e.target.value)}
@@ -101,8 +155,11 @@ export function LoginPage() {
             autoFocus
             required
             minLength={3}
-            maxLength={32}
+            maxLength={mode === "signin" ? 254 : 32}
           />
+          {mode === "signin" && username.includes("@") && (
+            <span className="hint">We’ll email you a code to confirm it’s you.</span>
+          )}
         </label>
         {mode === "register" && (
           <>
@@ -130,7 +187,9 @@ export function LoginPage() {
                 </select>
               </label>
             </div>
-            <span className="hint">You can add your name in other languages later in Account.</span>
+            <span className="hint">
+              We’ll email you a code to confirm the address. You can add your name in other languages later in Account.
+            </span>
           </>
         )}
         <label>
@@ -159,7 +218,7 @@ export function LoginPage() {
         )}
         <div className="error-text">{error}</div>
         <button className="btn-primary auth-submit" type="submit" disabled={busy}>
-          {mode === "signin" ? "Sign in" : "Create account & sign in"}
+          {mode === "signin" ? "Sign in" : "Create account"}
         </button>
         {mode === "signin" && passkeysSupported() && (
           <>

@@ -51,6 +51,14 @@ services:
       timeout: 3s
       retries: 20
 
+  # Catches outgoing email for local dev: SMTP on :1025, web UI on http://localhost:8025
+  mailpit:
+    image: axllent/mailpit:v1.21.8
+    container_name: keyvault-mailpit
+    ports:
+      - "1025:1025"
+      - "8025:8025"
+
   app:
     build: .
     container_name: keyvault-app
@@ -68,6 +76,7 @@ services:
       AUTH_DB: ${AUTH_DB:-mongo}
       MONGO_URL: mongodb://mongo:27017
       DATABASE_URL: postgres://keyvault:keyvault@postgres:5432/keyvault
+      SMTP_URL: smtp://mailpit:1025
     ports:
       - "${PORT:-3000}:${PORT:-3000}"
     depends_on:

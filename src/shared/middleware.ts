@@ -12,6 +12,8 @@ export interface AuthenticatedUser {
   clientId: string;
   /** Current roles, read from the user record on every request (so revoking takes effect at once). */
   roles: string[];
+  /** Device the token was issued to (absent for tokens from before devices were tracked). */
+  deviceId?: string;
 }
 
 /** Resolves an access token to its user, or null when it is unknown or expired. */

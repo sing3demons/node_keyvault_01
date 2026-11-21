@@ -1,4 +1,4 @@
-import { authFetch } from "./auth";
+import { authFetch, type PendingVerification } from "./auth";
 
 export type Permission = "read" | "write" | "delete";
 export const PERMISSIONS: Permission[] = ["read", "write", "delete"];
@@ -52,6 +52,7 @@ export interface Account {
   id: string;
   username: string;
   email?: string;
+  emailVerified: boolean;
   profiles: LocalizedProfile[];
   preferredLang?: string;
   displayProfile?: LocalizedProfile;
@@ -63,6 +64,25 @@ export interface AccountUpdate {
   email?: string;
   profiles?: LocalizedProfile[];
   preferredLang?: string | null;
+}
+
+export type SignInMethod = "password" | "password+email_code" | "passkey" | "registration";
+
+/** A browser the user signed in from. */
+export interface Device {
+  id: string;
+  name: string;
+  userAgent: string;
+  ip?: string;
+  firstSignInAt: string;
+  lastSignInAt: string;
+  lastSeenAt: string;
+  lastMethod: SignInMethod;
+  signIns: number;
+  /** Still holds a usable session. */
+  active: boolean;
+  /** The browser you are using now. */
+  current: boolean;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -84,6 +104,11 @@ export const api = {
   me: () => request<Account>("/auth/me"),
   updateAccount: (update: AccountUpdate) =>
     request<Account>("/auth/me", { method: "PATCH", body: JSON.stringify(update) }),
+  startEmailVerification: () => request<PendingVerification>("/auth/me/email/verification", { method: "POST" }),
+  devices: async () => (await request<{ devices: Device[] }>("/auth/me/devices")).devices,
+  signOutDevice: (id: string) =>
+    request<null>(`/auth/me/devices/${encodeURIComponent(id)}/sign-out`, { method: "POST" }),
+  removeDevice: (id: string) => request<null>(`/auth/me/devices/${encodeURIComponent(id)}`, { method: "DELETE" }),
   list: async () => (await request<{ secrets: SecretSummary[] }>("/secrets")).secrets,
   get: async (name: string) => (await request<{ value: string }>(path(name))).value,
   set: (name: string, value: string) => request<unknown>(path(name), { method: "PUT", body: JSON.stringify({ value }) }),

@@ -296,6 +296,19 @@ async function postJson<T>(path: string, body: unknown, bearer?: string): Promis
   return json as T;
 }
 
+/** An emailed code is waiting to be entered (returned instead of signing in). */
+export interface PendingVerification {
+  challengeId: string;
+  /** Masked address the code went to. */
+  email: string;
+  reason: "register" | "verify_email" | "login";
+  expiresAt: string;
+  resendAt: string;
+}
+
+/** Signed in (follow `redirect`), or enter the code from the email first. */
+export type SignInStep = { redirect: string } | { verify: PendingVerification };
+
 export interface RegisterInput {
   username: string;
   email: string;
@@ -304,10 +317,26 @@ export interface RegisterInput {
   preferredLang?: string;
 }
 
-export const register = (input: RegisterInput) => postJson<{ id: string; username: string }>("/auth/register", input);
+/** Creates the account and emails a code; entering it (confirmEmailCode with requestId) signs the user in. */
+export const register = (requestId: string, input: RegisterInput) =>
+  postJson<{ id: string; username: string; verification: PendingVerification }>("/auth/register", {
+    ...input,
+    request_id: requestId
+  });
 
-export const loginWithPassword = (requestId: string, username: string, password: string) =>
-  postJson<{ redirect: string }>("/auth/login/password", { request_id: requestId, username, password });
+/** `identifier` is a username or an email address (an email address always needs the emailed code). */
+export const loginWithPassword = (requestId: string, identifier: string, password: string) =>
+  postJson<SignInStep>("/auth/login/password", { request_id: requestId, username: identifier, password });
+
+/** Login page: confirm a sign-in code -> { redirect }. */
+export const confirmSignInCode = (requestId: string, challengeId: string, code: string) =>
+  postJson<{ redirect: string }>("/auth/email/verify", { request_id: requestId, challengeId, code });
+
+/** Account page / API: confirm a code that only verifies the address. */
+export const confirmEmailCode = (challengeId: string, code: string) =>
+  postJson<{ verified: true }>("/auth/email/verify", { challengeId, code });
+
+export const resendEmailCode = (challengeId: string) => postJson<PendingVerification>("/auth/email/resend", { challengeId });
 
 export const passkeysSupported = () => typeof window !== "undefined" && "PublicKeyCredential" in window;
 

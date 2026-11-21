@@ -8,8 +8,11 @@ import { OAuthError } from "./oauth.js";
 
 const nonEmpty = z.string().min(1);
 const base64url = z.string().regex(/^[A-Za-z0-9_-]+$/, "must be base64url");
-/** Login input is only normalized (not pattern-checked) so errors never hint which usernames exist. */
-const loginUsername = z.string().trim().toLowerCase().min(1).max(64);
+/**
+ * Username or email address (it is an email when it contains "@"). Only normalized, not pattern-checked,
+ * so errors never hint which accounts exist.
+ */
+const loginIdentifier = z.string().trim().toLowerCase().min(1).max(254);
 
 // ---------------------------------------------------------------- profile fields
 
@@ -48,6 +51,8 @@ const preferredLangIssue = { message: "preferredLang must be one of profiles[].l
 
 export const registerBody = z
   .object({
+    /** From the login page: entering the emailed code then also signs the new user in. */
+    request_id: nonEmpty.optional(),
     username: z
       .string()
       .trim()
@@ -72,9 +77,22 @@ export const updateAccountBody = z
 
 export const passwordLoginBody = z.object({
   request_id: nonEmpty,
-  username: loginUsername,
+  /** Username or email (signing in with an email also requires a code sent to it). */
+  username: loginIdentifier,
   password: z.string().max(256)
 });
+
+/** POST /auth/email/verify — `request_id` only for codes started on the login page (sign-in). */
+export const emailCodeBody = z.object({
+  challengeId: nonEmpty.max(64),
+  code: z
+    .string()
+    .transform((v) => v.replace(/[\s-]/g, ""))
+    .pipe(z.string().regex(/^\d{6}$/, "code must be the 6 digits from the email")),
+  request_id: nonEmpty.optional()
+});
+
+export const emailResendBody = z.object({ challengeId: nonEmpty.max(64) });
 
 export const passkeyLoginOptionsBody = z.object({
   request_id: nonEmpty

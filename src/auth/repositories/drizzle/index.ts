@@ -1,4 +1,4 @@
-import { and, asc, count, eq, gt, lt, ne } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, isNotNull, lt, ne, sql } from "drizzle-orm";
 import type { HashAlgorithm } from "../../../shared/hashing.js";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
@@ -6,6 +6,9 @@ import { Pool } from "pg";
 import type {
   Credential,
   AccessToken,
+  Device,
+  DeviceSignIn,
+  EmailChallenge,
   AuthCode,
   AuthRequest,
   LocalizedProfile,
@@ -20,7 +23,18 @@ import type {
 import { DuplicateKeyError, type AuthRepository } from "../../repository.js";
 import * as schema from "./schema.js";
 
-const { users, userProfiles, userCredentials, webauthnChallenges, authRequests, authCodes, accessTokens, refreshTokens } = schema;
+const {
+  users,
+  userProfiles,
+  userCredentials,
+  webauthnChallenges,
+  emailChallenges,
+  devices,
+  authRequests,
+  authCodes,
+  accessTokens,
+  refreshTokens
+} = schema;
 
 type Db = NodePgDatabase<typeof schema>;
 // ---------------------------------------------------------------- row <-> domain mapping
@@ -98,6 +112,7 @@ export class DrizzleAuthRepository implements AuthRepository {
             id: user.id,
             username: user.username,
             email: user.email,
+            emailVerifiedAt: user.emailVerifiedAt,
             preferredLang: user.preferredLang,
             roles: user.roles,
             createdAt: user.createdAt
@@ -115,6 +130,7 @@ export class DrizzleAuthRepository implements AuthRepository {
         this.db.transaction(async (tx) => {
           const set: Partial<typeof users.$inferInsert> = {};
           if (update.email !== undefined) set.email = update.email;
+          if (update.emailVerifiedAt !== undefined) set.emailVerifiedAt = update.emailVerifiedAt; // null clears
           if (update.preferredLang !== undefined) set.preferredLang = update.preferredLang; // null clears
           if (Object.keys(set).length > 0) await tx.update(users).set(set).where(eq(users.id, userId));
           if (update.profiles !== undefined) {
@@ -140,6 +156,16 @@ export class DrizzleAuthRepository implements AuthRepository {
     },
     findByUsername: async (username: string) =>
       this.loadUser((await this.db.select().from(users).where(eq(users.username, username)))[0]),
+    findByEmail: async (email: string) => this.loadUser((await this.db.select().from(users).where(eq(users.email, email)))[0]),
+    markEmailVerified: async (userId: string, email: string, at: Date) => {
+      if (!this.isUuid(userId)) return false;
+      const rows = await this.db
+        .update(users)
+        .set({ emailVerifiedAt: at })
+        .where(and(eq(users.id, userId), eq(users.email, email)))
+        .returning({ id: users.id });
+      return rows.length > 0;
+    },
     findByWebAuthnCredId: async (credId: string) => {
       const row = (await this.db.select().from(userCredentials).where(eq(userCredentials.credId, credId)))[0];
       if (!row) return null;
@@ -199,6 +225,7 @@ export class DrizzleAuthRepository implements AuthRepository {
       id: row.id,
       username: row.username,
       ...(row.email !== null ? { email: row.email } : {}),
+      ...(row.emailVerifiedAt !== null ? { emailVerifiedAt: row.emailVerifiedAt } : {}),
       profiles: profiles.map(({ lang, firstName, lastName }) => ({ lang, firstName, lastName })),
       ...(row.preferredLang !== null ? { preferredLang: row.preferredLang } : {}),
       roles: row.roles,
@@ -223,6 +250,65 @@ export class DrizzleAuthRepository implements AuthRepository {
             .returning()
         )[0]
       )
+  };
+
+  readonly emailChallenges = {
+    create: (c: EmailChallenge) => this.insert("Email challenge", () => this.db.insert(emailChallenges).values(c)),
+    findActive: async (id: string, now: Date) =>
+      clean<EmailChallenge>(
+        (await this.db.select().from(emailChallenges).where(and(eq(emailChallenges.id, id), gt(emailChallenges.expiresAt, now))))[0]
+      ),
+    recordFailedAttempt: async (id: string) => {
+      const [row] = await this.db
+        .update(emailChallenges)
+        .set({ attempts: sql`${emailChallenges.attempts} + 1` })
+        .where(eq(emailChallenges.id, id))
+        .returning({ attempts: emailChallenges.attempts });
+      return row ? row.attempts : null;
+    },
+    replaceCode: async (id: string, codeHash: string, sentAt: Date, expiresAt: Date) => {
+      await this.db
+        .update(emailChallenges)
+        .set({ codeHash, sentAt, expiresAt, attempts: 0, sends: sql`${emailChallenges.sends} + 1` })
+        .where(eq(emailChallenges.id, id));
+    },
+    consume: async (id: string) =>
+      (await this.db.delete(emailChallenges).where(eq(emailChallenges.id, id)).returning({ id: emailChallenges.id })).length > 0
+  };
+
+  readonly devices = {
+    recordSignIn: async (d: DeviceSignIn) => {
+      const latest = { name: d.name, userAgent: d.userAgent, ip: d.ip ?? null, lastSignInAt: d.at, lastSeenAt: d.at, lastMethod: d.method };
+      const [row] = await this.db
+        .insert(devices)
+        .values({ id: d.id, userId: d.userId, keyHash: d.keyHash, createdAt: d.at, signIns: 1, ...latest })
+        .onConflictDoUpdate({
+          target: [devices.userId, devices.keyHash],
+          set: { ...latest, signIns: sql`${devices.signIns} + 1` }
+        })
+        .returning({ id: devices.id });
+      return row!.id;
+    },
+    listByUser: async (userId: string): Promise<Device[]> => {
+      if (!this.isUuid(userId)) return [];
+      const rows = await this.db.select().from(devices).where(eq(devices.userId, userId)).orderBy(desc(devices.lastSeenAt));
+      return rows.map((r) => clean<Device>(r)!);
+    },
+    touch: async (id: string, at: Date) => {
+      if (!this.isUuid(id)) return;
+      await this.db
+        .update(devices)
+        .set({ lastSeenAt: sql`GREATEST(${devices.lastSeenAt}, ${at})` })
+        .where(eq(devices.id, id));
+    },
+    delete: async (userId: string, id: string) => {
+      if (!this.isUuid(userId) || !this.isUuid(id)) return false;
+      const rows = await this.db
+        .delete(devices)
+        .where(and(eq(devices.id, id), eq(devices.userId, userId)))
+        .returning({ id: devices.id });
+      return rows.length > 0;
+    }
   };
 
   readonly authRequests = {
@@ -289,6 +375,31 @@ export class DrizzleAuthRepository implements AuthRepository {
         await tx.update(refreshTokens).set({ revoked: true }).where(eq(refreshTokens.familyId, familyId));
         await tx.delete(accessTokens).where(eq(accessTokens.familyId, familyId));
       });
+    },
+    revokeDevice: async (userId: string, deviceId: string) => {
+      if (!this.isUuid(userId) || !this.isUuid(deviceId)) return;
+      await this.db.transaction(async (tx) => {
+        await tx
+          .update(refreshTokens)
+          .set({ revoked: true })
+          .where(and(eq(refreshTokens.userId, userId), eq(refreshTokens.deviceId, deviceId)));
+        await tx.delete(accessTokens).where(and(eq(accessTokens.userId, userId), eq(accessTokens.deviceId, deviceId)));
+      });
+    },
+    activeDeviceIds: async (userId: string, now: Date) => {
+      if (!this.isUuid(userId)) return [];
+      const rows = await this.db
+        .selectDistinct({ deviceId: refreshTokens.deviceId })
+        .from(refreshTokens)
+        .where(
+          and(
+            eq(refreshTokens.userId, userId),
+            eq(refreshTokens.revoked, false),
+            gt(refreshTokens.expiresAt, now),
+            isNotNull(refreshTokens.deviceId)
+          )
+        );
+      return rows.flatMap((r) => (r.deviceId ? [r.deviceId] : []));
     }
   };
 
@@ -304,6 +415,7 @@ export class DrizzleAuthRepository implements AuthRepository {
   async purgeExpired(now: Date): Promise<void> {
     await this.db.transaction(async (tx) => {
       await tx.delete(webauthnChallenges).where(lt(webauthnChallenges.expiresAt, now));
+      await tx.delete(emailChallenges).where(lt(emailChallenges.expiresAt, now));
       await tx.delete(authRequests).where(lt(authRequests.expiresAt, now));
       await tx.delete(authCodes).where(lt(authCodes.expiresAt, now));
       await tx.delete(accessTokens).where(lt(accessTokens.expiresAt, now));

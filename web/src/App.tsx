@@ -1,7 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { api, type Account, type SecretSummary } from "./api";
 import { addPasskey, getIdentity, logout, onIdentityChange, passkeysSupported, refresh, startLogin } from "./auth";
-import { AccountDialog, DeleteDialog, EditDialog, SecretRow, ShareDialog, Toasts, TransferDialog, UsersDialog, type Toast } from "./components";
+import {
+  AccountDialog,
+  DeleteDialog,
+  DevicesDialog,
+  EditDialog,
+  SecretRow,
+  ShareDialog,
+  Toasts,
+  TransferDialog,
+  UsersDialog,
+  type Toast
+} from "./components";
 import { LockIcon, PlusIcon, RefreshIcon, SearchIcon, UsersIcon } from "./icons";
 
 type Health = { state: "loading" } | { state: "ok"; provider: string } | { state: "error" };
@@ -16,6 +27,7 @@ export function App() {
   const [sharing, setSharing] = useState<string | null>(null);
   const [transferring, setTransferring] = useState<SecretSummary | null>(null);
   const [usersOpen, setUsersOpen] = useState(false);
+  const [devicesOpen, setDevicesOpen] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [account, setAccount] = useState<Account | null>(null);
   const [accountOpen, setAccountOpen] = useState(false);
@@ -123,6 +135,9 @@ export function App() {
               <UsersIcon /> <span className="label-text">Users</span>
             </button>
           )}
+          <button className="btn-ghost" onClick={() => setDevicesOpen(true)} title="Devices that signed in to your account">
+            💻 <span className="label-text">Devices</span>
+          </button>
           {passkeysSupported() && (
             <button className="btn-ghost" onClick={onAddPasskey} title="Register a passkey for this account">
               🔑 <span className="label-text">Add passkey</span>
@@ -228,6 +243,8 @@ export function App() {
 
       <UsersDialog open={usersOpen} currentUserId={account?.id} onClose={() => setUsersOpen(false)} />
 
+      <DevicesDialog open={devicesOpen} onClose={() => setDevicesOpen(false)} />
+
       <DeleteDialog
         name={deleting}
         onClose={() => setDeleting(null)}
@@ -247,7 +264,12 @@ export function App() {
           setAccount(updated);
           setAccountOpen(false);
           refresh(); // new ID Token carrying the updated name / language
-          toast("Account updated");
+          toast(updated.email && !updated.emailVerified ? "Account updated — please verify your email" : "Account updated");
+        }}
+        onVerified={(updated) => {
+          setAccount(updated);
+          refresh(); // ID Token's email_verified is now true
+          toast("Email verified");
         }}
       />
 

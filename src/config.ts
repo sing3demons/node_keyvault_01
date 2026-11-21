@@ -34,6 +34,22 @@ class Config {
     refreshTokenTtlSec: number;
   };
 
+  mail: {
+    /** Unset => emails are printed to the log (development only). */
+    smtpUrl?: string;
+    from: string;
+  };
+
+  emailCodes: {
+    ttlSec: number;
+    maxAttempts: number;
+    resendCooldownSec: number;
+    maxSends: number;
+  };
+
+  /** Take the client IP from X-Forwarded-For (only behind a reverse proxy you control). */
+  trustProxy: boolean;
+
   /** Usernames that get the admin role (at startup for existing users, at registration for new ones). */
   adminUsernames: string[];
 
@@ -80,6 +96,20 @@ class Config {
       accessTokenTtlSec: Number(process.env.ACCESS_TOKEN_TTL ?? 900),
       refreshTokenTtlSec: Number(process.env.REFRESH_TOKEN_TTL ?? 60 * 60 * 24 * 30)
     };
+
+    this.mail = {
+      smtpUrl: process.env.SMTP_URL || undefined,
+      from: process.env.MAIL_FROM ?? `${this.webauthn.rpName} <no-reply@localhost>`
+    };
+
+    this.emailCodes = {
+      ttlSec: Number(process.env.EMAIL_CODE_TTL ?? 600),
+      maxAttempts: Number(process.env.EMAIL_CODE_MAX_ATTEMPTS ?? 5),
+      resendCooldownSec: Number(process.env.EMAIL_CODE_RESEND_COOLDOWN ?? 30),
+      maxSends: Number(process.env.EMAIL_CODE_MAX_SENDS ?? 5)
+    };
+
+    this.trustProxy = /^(1|true|yes)$/i.test(process.env.TRUST_PROXY ?? "");
 
     this.adminUsernames = list(process.env.ADMIN_USERNAMES, []).map((u) => u.toLowerCase());
 

@@ -4,6 +4,9 @@ import { MongoClient, ObjectId, type Collection, type Db, type Document } from "
 import type {
   Credential,
   AccessToken,
+  Device,
+  DeviceSignIn,
+  EmailChallenge,
   AuthCode,
   AuthRequest,
   LocalizedProfile,
@@ -52,6 +55,7 @@ const userFromDoc = (doc: Document | null): User | null => {
     id,
     username: doc.username,
     ...(typeof doc.email === "string" ? { email: doc.email } : {}),
+    ...(doc.emailVerifiedAt instanceof Date ? { emailVerifiedAt: doc.emailVerifiedAt } : {}),
     profiles: ((doc.profiles ?? []) as LocalizedProfile[]).map(({ lang, firstName, lastName }) => ({ lang, firstName, lastName })),
     ...(typeof doc.preferredLang === "string" ? { preferredLang: doc.preferredLang } : {}),
     roles: Array.isArray(doc.roles) ? (doc.roles as Role[]) : [],
@@ -82,6 +86,8 @@ export class MongoAuthRepository implements AuthRepository {
   private readonly db: Db;
   private readonly users$: Collection<UserDoc>;
   private readonly challenges$: Collection<Doc<WebAuthnChallenge>>;
+  private readonly emailChallenges$: Collection<Doc<EmailChallenge>>;
+  private readonly devices$: Collection<Doc<Device>>;
   private readonly authRequests$: Collection<Doc<AuthRequest>>;
   private readonly authCodes$: Collection<Doc<AuthCode>>;
   private readonly access$: Collection<Doc<AccessToken>>;
@@ -100,6 +106,8 @@ export class MongoAuthRepository implements AuthRepository {
     this.db = db;
     this.users$ = db.collection("users");
     this.challenges$ = db.collection("webauthn_challenges");
+    this.emailChallenges$ = db.collection("email_challenges");
+    this.devices$ = db.collection("devices");
     this.authRequests$ = db.collection("auth_requests");
     this.authCodes$ = db.collection("auth_codes");
     this.access$ = db.collection("access_tokens");
@@ -112,6 +120,7 @@ export class MongoAuthRepository implements AuthRepository {
         _id: user.id,
         username: user.username,
         ...(user.email !== undefined ? { email: user.email } : {}),
+        ...(user.emailVerifiedAt !== undefined ? { emailVerifiedAt: user.emailVerifiedAt } : {}),
         profiles: user.profiles,
         ...(user.preferredLang !== undefined ? { preferredLang: user.preferredLang } : {}),
         roles: user.roles,
@@ -128,6 +137,8 @@ export class MongoAuthRepository implements AuthRepository {
       const $set: Record<string, unknown> = {};
       const $unset: Record<string, ""> = {};
       if (update.email !== undefined) $set.email = update.email;
+      if (update.emailVerifiedAt === null) $unset.emailVerifiedAt = "";
+      else if (update.emailVerifiedAt !== undefined) $set.emailVerifiedAt = update.emailVerifiedAt;
       if (update.profiles !== undefined) $set.profiles = update.profiles;
       if (update.preferredLang === null) $unset.preferredLang = "";
       else if (update.preferredLang !== undefined) $set.preferredLang = update.preferredLang;
@@ -156,6 +167,9 @@ export class MongoAuthRepository implements AuthRepository {
       await this.users$.updateOne({ _id: this.byId(userId) }, { $set: { roles } });
     },
     findByUsername: async (username: string) => userFromDoc(await this.users$.findOne({ username })),
+    findByEmail: async (email: string) => userFromDoc(await this.users$.findOne({ email })),
+    markEmailVerified: async (userId: string, email: string, at: Date) =>
+      (await this.users$.updateOne({ _id: this.byId(userId), email }, { $set: { emailVerifiedAt: at } })).matchedCount > 0,
     findByWebAuthnCredId: async (credId: string) => {
       const user = userFromDoc(await this.users$.findOne({ "credentials.key": `webauthn:${credId}` }));
       const credential = user?.credentials.find(
@@ -209,6 +223,55 @@ export class MongoAuthRepository implements AuthRepository {
       fromDoc<WebAuthnChallenge>(await this.challenges$.findOneAndDelete({ _id: id, type }))
   };
 
+  readonly emailChallenges = {
+    create: (c: EmailChallenge) => this.insert(this.emailChallenges$, c, "Email challenge"),
+    findActive: async (id: string, now: Date) =>
+      fromDoc<EmailChallenge>(await this.emailChallenges$.findOne({ _id: id, expiresAt: { $gt: now } })),
+    recordFailedAttempt: async (id: string) => {
+      const doc = await this.emailChallenges$.findOneAndUpdate(
+        { _id: id },
+        { $inc: { attempts: 1 } },
+        { returnDocument: "after" }
+      );
+      return doc ? doc.attempts : null;
+    },
+    replaceCode: async (id: string, codeHash: string, sentAt: Date, expiresAt: Date) => {
+      await this.emailChallenges$.updateOne(
+        { _id: id },
+        { $set: { codeHash, sentAt, expiresAt, attempts: 0 }, $inc: { sends: 1 } }
+      );
+    },
+    consume: async (id: string) => (await this.emailChallenges$.deleteOne({ _id: id })).deletedCount > 0
+  };
+
+  readonly devices = {
+    recordSignIn: async (d: DeviceSignIn) => {
+      const doc = await this.devices$.findOneAndUpdate(
+        { userId: d.userId, keyHash: d.keyHash },
+        {
+          $set: {
+            name: d.name,
+            userAgent: d.userAgent,
+            ...(d.ip !== undefined ? { ip: d.ip } : {}),
+            lastSignInAt: d.at,
+            lastSeenAt: d.at,
+            lastMethod: d.method
+          },
+          $setOnInsert: { _id: d.id, createdAt: d.at },
+          $inc: { signIns: 1 }
+        },
+        { upsert: true, returnDocument: "after" }
+      );
+      return doc ? String(doc._id) : d.id;
+    },
+    listByUser: async (userId: string) =>
+      (await this.devices$.find({ userId }).sort({ lastSeenAt: -1 }).toArray()).map((d) => fromDoc<Device>(d)!),
+    touch: async (id: string, at: Date) => {
+      await this.devices$.updateOne({ _id: id }, { $max: { lastSeenAt: at } });
+    },
+    delete: async (userId: string, id: string) => (await this.devices$.deleteOne({ _id: id, userId })).deletedCount > 0
+  };
+
   readonly authRequests = {
     create: (r: AuthRequest) => this.insert(this.authRequests$, r, "Authorization request"),
     findActive: async (id: string, now: Date) =>
@@ -239,7 +302,17 @@ export class MongoAuthRepository implements AuthRepository {
         this.refresh$.updateMany({ familyId }, { $set: { revoked: true } }),
         this.access$.deleteMany({ familyId })
       ]);
-    }
+    },
+    revokeDevice: async (userId: string, deviceId: string) => {
+      await Promise.all([
+        this.refresh$.updateMany({ userId, deviceId }, { $set: { revoked: true } }),
+        this.access$.deleteMany({ userId, deviceId })
+      ]);
+    },
+    activeDeviceIds: async (userId: string, now: Date) =>
+      (
+        await this.refresh$.distinct("deviceId", { userId, revoked: false, expiresAt: { $gt: now }, deviceId: { $type: "string" } })
+      ).map(String)
   };
 
   async init(): Promise<void> {
@@ -254,12 +327,17 @@ export class MongoAuthRepository implements AuthRepository {
         { unique: true, partialFilterExpression: { "credentials.key": { $exists: true } } }
       ),
       this.challenges$.createIndex({ expiresAt: 1 }, ttl),
+      this.emailChallenges$.createIndex({ expiresAt: 1 }, ttl),
+      this.devices$.createIndex({ userId: 1, keyHash: 1 }, { unique: true }),
+      this.devices$.createIndex({ userId: 1, lastSeenAt: -1 }),
       this.authRequests$.createIndex({ expiresAt: 1 }, ttl),
       this.authCodes$.createIndex({ expiresAt: 1 }, ttl),
       this.access$.createIndex({ expiresAt: 1 }, ttl),
       this.access$.createIndex({ familyId: 1 }),
+      this.access$.createIndex({ userId: 1, deviceId: 1 }),
       this.refresh$.createIndex({ expiresAt: 1 }, ttl),
-      this.refresh$.createIndex({ familyId: 1 })
+      this.refresh$.createIndex({ familyId: 1 }),
+      this.refresh$.createIndex({ userId: 1, deviceId: 1 })
     ]);
   }
 

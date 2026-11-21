@@ -8,6 +8,7 @@ export const users = pgTable("users", {
   username: text("username").notNull().unique(),
   // nullable: accounts created before email was collected (UNIQUE allows many NULLs)
   email: text("email").unique(),
+  emailVerifiedAt: ts("email_verified_at"),
   preferredLang: text("preferred_lang"),
   roles: text("roles", { enum: ["admin"] })
     .array()
@@ -82,6 +83,48 @@ export const webauthnChallenges = pgTable(
   (t) => [index("webauthn_challenges_expires_at_idx").on(t.expiresAt)]
 );
 
+/** One-time codes sent by email (only sha256 of the code is stored). */
+export const emailChallenges = pgTable(
+  "email_challenges",
+  {
+    id: text("id").primaryKey(),
+    purpose: text("purpose", { enum: ["signin", "verify"] }).notNull(),
+    reason: text("reason", { enum: ["register", "verify_email", "login"] }).notNull(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    email: text("email").notNull(),
+    codeHash: text("code_hash").notNull(),
+    attempts: integer("attempts").notNull().default(0),
+    sends: integer("sends").notNull().default(1),
+    sentAt: ts("sent_at").notNull(),
+    authRequestId: text("auth_request_id"),
+    expiresAt: ts("expires_at").notNull()
+  },
+  (t) => [index("email_challenges_expires_at_idx").on(t.expiresAt)]
+);
+
+/** Browsers a user signed in from: one row per (user, device cookie). */
+export const devices = pgTable(
+  "devices",
+  {
+    id: uuid("id").primaryKey(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    keyHash: text("key_hash").notNull(),
+    name: text("name").notNull(),
+    userAgent: text("user_agent").notNull(),
+    ip: text("ip"),
+    createdAt: ts("created_at").notNull(),
+    lastSignInAt: ts("last_sign_in_at").notNull(),
+    lastSeenAt: ts("last_seen_at").notNull(),
+    lastMethod: text("last_method", { enum: ["password", "password+email_code", "passkey", "registration"] }).notNull(),
+    signIns: integer("sign_ins").notNull().default(1)
+  },
+  (t) => [uniqueIndex("devices_user_key_idx").on(t.userId, t.keyHash), index("devices_user_seen_idx").on(t.userId, t.lastSeenAt)]
+);
+
 export const authRequests = pgTable(
   "auth_requests",
   {
@@ -111,6 +154,7 @@ export const authCodes = pgTable(
     familyId: text("family_id").notNull(),
     nonce: text("nonce"),
     authTime: ts("auth_time"),
+    deviceId: uuid("device_id"),
     used: boolean("used").notNull().default(false),
     expiresAt: ts("expires_at").notNull()
   },
@@ -127,9 +171,14 @@ export const accessTokens = pgTable(
     clientId: text("client_id").notNull(),
     scope: text("scope").notNull(),
     familyId: text("family_id").notNull(),
+    deviceId: uuid("device_id"),
     expiresAt: ts("expires_at").notNull()
   },
-  (t) => [index("access_tokens_family_id_idx").on(t.familyId), index("access_tokens_expires_at_idx").on(t.expiresAt)]
+  (t) => [
+    index("access_tokens_family_id_idx").on(t.familyId),
+    index("access_tokens_expires_at_idx").on(t.expiresAt),
+    index("access_tokens_user_device_idx").on(t.userId, t.deviceId)
+  ]
 );
 
 export const refreshTokens = pgTable(
@@ -144,7 +193,12 @@ export const refreshTokens = pgTable(
     familyId: text("family_id").notNull(),
     revoked: boolean("revoked").notNull().default(false),
     authTime: ts("auth_time"),
+    deviceId: uuid("device_id"),
     expiresAt: ts("expires_at").notNull()
   },
-  (t) => [index("refresh_tokens_family_id_idx").on(t.familyId), index("refresh_tokens_expires_at_idx").on(t.expiresAt)]
+  (t) => [
+    index("refresh_tokens_family_id_idx").on(t.familyId),
+    index("refresh_tokens_expires_at_idx").on(t.expiresAt),
+    index("refresh_tokens_user_device_idx").on(t.userId, t.deviceId)
+  ]
 );

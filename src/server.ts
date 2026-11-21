@@ -12,6 +12,9 @@ import { AuthService } from "./auth/service.js";
 import { IdTokenIssuer, SigningKeyRing } from "./auth/oidc.js";
 import { Argon2idHasher, SecretHasher } from "./shared/hashing.js";
 import { WebAuthnService } from "./auth/webauthn.js";
+import { EmailCodeService } from "./auth/email-codes.js";
+import { DeviceService } from "./auth/devices.js";
+import { createMailer } from "./shared/mail.js";
 import { AuthController } from "./auth/controller.js";
 import { requireAuth, requireRole, type AuthEnv } from "./shared/middleware.js";
 
@@ -45,16 +48,22 @@ async function main() {
   const signingKeys = new SigningKeyRing(new NamedSecret(keyVaultSecretStore, config.oidc.keysSecretName), config.oidc);
   await signingKeys.init();
   const idTokens = new IdTokenIssuer(config.oidc, signingKeys);
+  const emailCodes = new EmailCodeService(authRepo, createMailer(config.mail), {
+    ...config.emailCodes,
+    appName: config.webauthn.rpName
+  });
   const authService = new AuthService(
     authRepo,
     new SecretHasher(new Argon2idHasher()),
     config.oauth,
     idTokens,
+    emailCodes,
+    new DeviceService(authRepo),
     config.adminUsernames
   );
   await authService.bootstrapAdmins();
   const webAuthnService = new WebAuthnService(authRepo, config.webauthn);
-  const auth = new AuthController(authService, webAuthnService, idTokens);
+  const auth = new AuthController(authService, webAuthnService, idTokens, config.trustProxy);
   const bearer = requireAuth(authService);
 
   const app = new Hono<AuthEnv>();
@@ -79,6 +88,14 @@ async function main() {
   app.get("/auth/me", bearer, (c) => auth.getAccount(c));
   app.patch("/auth/me", bearer, (c) => auth.updateAccount(c));
   app.post("/auth/login/password", (c) => auth.loginPassword(c));
+  // emailed codes: registration, sign-in with an email address, verifying an address
+  app.post("/auth/email/verify", (c) => auth.confirmEmailCode(c));
+  app.post("/auth/email/resend", (c) => auth.resendEmailCode(c));
+  app.post("/auth/me/email/verification", bearer, (c) => auth.startEmailVerification(c));
+  // devices the user signed in from
+  app.get("/auth/me/devices", bearer, (c) => auth.listDevices(c));
+  app.post("/auth/me/devices/:id/sign-out", bearer, (c) => auth.signOutDevice(c));
+  app.delete("/auth/me/devices/:id", bearer, (c) => auth.removeDevice(c));
   app.post("/auth/webauthn/login/options", (c) => auth.passkeyLoginOptions(c));
   app.post("/auth/webauthn/login/verify", (c) => auth.passkeyLoginVerify(c));
 

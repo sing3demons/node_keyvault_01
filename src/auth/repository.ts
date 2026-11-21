@@ -9,6 +9,9 @@ import type {
   AuthCode,
   AuthRequest,
   Credential,
+  Device,
+  DeviceSignIn,
+  EmailChallenge,
   RefreshToken,
   Role,
   User,
@@ -38,6 +41,10 @@ export interface UserRepository {
   list(): Promise<UserSummary[]>;
   setRoles(userId: string, roles: Role[]): Promise<void>;
   findByUsername(username: string): Promise<User | null>;
+  /** `email` is already lowercased. */
+  findByEmail(email: string): Promise<User | null>;
+  /** Marks the email verified, but only while the user still has exactly this address. @returns whether it did */
+  markEmailVerified(userId: string, email: string, at: Date): Promise<boolean>;
   /** Finds the owner of a passkey. */
   findByWebAuthnCredId(credId: string): Promise<{ user: User; credential: WebAuthnCredential } | null>;
 
@@ -57,6 +64,30 @@ export interface ChallengeRepository {
   create(challenge: WebAuthnChallenge): Promise<void>;
   /** Atomically delete and return (single use). */
   consume(id: string, type: WebAuthnChallenge["type"]): Promise<WebAuthnChallenge | null>;
+}
+
+export interface EmailChallengeRepository {
+  create(challenge: EmailChallenge): Promise<void>;
+  findActive(id: string, now: Date): Promise<EmailChallenge | null>;
+  /** Atomically count a wrong code; returns the new attempt count, or null if the challenge is gone. */
+  recordFailedAttempt(id: string): Promise<number | null>;
+  /** Resend: store the new code hash, reset attempts and count the send. */
+  replaceCode(id: string, codeHash: string, sentAt: Date, expiresAt: Date): Promise<void>;
+  /** Atomically delete; true only for the caller that removed it (single use). */
+  consume(id: string): Promise<boolean>;
+}
+
+export interface DeviceRepository {
+  /**
+   * Upsert by (userId, keyHash): a new device gets `id` and createdAt; an existing one gets the latest
+   * name/userAgent/ip/method, lastSignInAt = lastSeenAt = at, and signIns + 1. @returns the device's id
+   */
+  recordSignIn(signIn: DeviceSignIn): Promise<string>;
+  /** Most recently seen first. */
+  listByUser(userId: string): Promise<Device[]>;
+  touch(id: string, at: Date): Promise<void>;
+  /** @returns whether a device of this user was deleted */
+  delete(userId: string, id: string): Promise<boolean>;
 }
 
 export interface AuthRequestRepository {
@@ -83,11 +114,17 @@ export interface TokenRepository {
   rotateRefresh(id: string): Promise<RefreshToken | null>;
   /** Revoke every refresh token and delete every access token in the family. */
   revokeFamily(familyId: string): Promise<void>;
+  /** Same as revokeFamily, for every session the user started on the device. */
+  revokeDevice(userId: string, deviceId: string): Promise<void>;
+  /** Devices of the user that still hold a usable (unrevoked, unexpired) refresh token. */
+  activeDeviceIds(userId: string, now: Date): Promise<string[]>;
 }
 
 export interface AuthRepository {
   readonly users: UserRepository;
   readonly challenges: ChallengeRepository;
+  readonly emailChallenges: EmailChallengeRepository;
+  readonly devices: DeviceRepository;
   readonly authRequests: AuthRequestRepository;
   readonly authCodes: AuthCodeRepository;
   readonly tokens: TokenRepository;

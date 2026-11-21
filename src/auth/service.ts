@@ -6,7 +6,17 @@ import type { AuthenticatedUser, TokenAuthenticator } from "../shared/middleware
 import { expiresIn } from "../shared/util.js";
 import { OAuthError, verifyPkceS256 } from "./oauth.js";
 import { OIDC_SCOPES, type IdTokenIssuer } from "./oidc.js";
-import { displayProfile, isPassword, type LocalizedProfile, type Role, type User, type UserSummary } from "./model.js";
+import type { DeviceContext, DeviceService } from "./devices.js";
+import type { EmailCodeService, PendingVerification } from "./email-codes.js";
+import {
+  displayProfile,
+  isPassword,
+  type LocalizedProfile,
+  type Role,
+  type SignInMethod,
+  type User,
+  type UserSummary
+} from "./model.js";
 import { DuplicateKeyError, type AuthRepository } from "./repository.js";
 import type { RegisterBody, UpdateAccountBody } from "./schemas.js";
 
@@ -45,11 +55,22 @@ const DEFAULT_SCOPE = "secrets";
 const AUTH_REQUEST_TTL_MS = 10 * 60_000;
 const AUTH_CODE_TTL_MS = 60_000;
 
+/** Result of a login step: signed in (go to `redirect`), or an emailed code must be entered first. */
+export type SignInStep = { redirect: string } | { verify: PendingVerification };
+
+/** How a sign-in was completed, recorded against the device it came from. */
+export interface SignIn {
+  device: DeviceContext;
+  method: SignInMethod;
+}
+
 /** Public view of a user (never includes credentials). */
 export interface Account {
   id: string;
   username: string;
   email?: string;
+  /** The email address was confirmed with an emailed code. */
+  emailVerified: boolean;
   profiles: LocalizedProfile[];
   preferredLang?: string;
   /** Profile in preferredLang, else the first one. */
@@ -82,6 +103,7 @@ const toAccount = (u: User): Account => ({
   id: u.id,
   username: u.username,
   ...(u.email !== undefined ? { email: u.email } : {}),
+  emailVerified: !!u.email && !!u.emailVerifiedAt,
   profiles: u.profiles,
   ...(u.preferredLang !== undefined ? { preferredLang: u.preferredLang } : {}),
   ...(displayProfile(u) ? { displayProfile: displayProfile(u) } : {}),
@@ -95,6 +117,8 @@ export class AuthService implements TokenAuthenticator {
     private readonly hasher: SecretHasher,
     private readonly oauth: OAuthSettings,
     private readonly idTokens: IdTokenIssuer,
+    private readonly emailCodes: EmailCodeService,
+    private readonly devices: DeviceService,
     /** Bootstrap admins (ADMIN_USERNAMES), lowercased. */
     private readonly adminUsernames: readonly string[] = []
   ) {}
@@ -128,8 +152,20 @@ export class AuthService implements TokenAuthenticator {
 
   // ---------------------------------------------------------------- users
 
-  /** Input is already validated and normalized by `registerBody`. */
-  async register({ username, email, password, profiles, preferredLang }: RegisterBody): Promise<Account> {
+  /**
+   * Input is already validated and normalized by `registerBody`. The account starts with an unverified
+   * email and a code is sent to it. With `request_id` (the login page) entering that code also signs the
+   * user in; without it (API clients) it only verifies the address.
+   */
+  async register({
+    request_id: requestId,
+    username,
+    email,
+    password,
+    profiles,
+    preferredLang
+  }: RegisterBody): Promise<Account & { verification: PendingVerification }> {
+    if (requestId !== undefined) await this.assertAuthRequest(requestId);
     const now = new Date();
     const user: User = {
       id: randomUUID(),
@@ -146,7 +182,63 @@ export class AuthService implements TokenAuthenticator {
     } catch (error) {
       throw this.conflict(error);
     }
-    return toAccount(user);
+    const verification = await this.emailCodes.start({
+      purpose: requestId !== undefined ? "signin" : "verify",
+      reason: "register",
+      userId: user.id,
+      email,
+      ...(requestId !== undefined ? { authRequestId: requestId } : {})
+    });
+    return { ...toAccount(user), verification };
+  }
+
+  // ---------------------------------------------------------------- email verification
+
+  /** Account page: email a code to the user's current (unverified) address. */
+  async startEmailVerification(userId: string): Promise<PendingVerification> {
+    const user = await this.requireUser(userId);
+    if (!user.email) throw new HttpError(400, "Add an email address first");
+    if (user.emailVerifiedAt) throw new HttpError(409, "Email is already verified", "conflict");
+    return this.emailCodes.start({ purpose: "verify", reason: "verify_email", userId: user.id, email: user.email });
+  }
+
+  resendEmailCode(challengeId: string): Promise<PendingVerification> {
+    return this.emailCodes.resend(challengeId);
+  }
+
+  /**
+   * Confirms an emailed code: the address is marked verified, and a sign-in challenge also completes its
+   * authorization request (`requestId` and `signIn` are required for those).
+   */
+  async confirmEmailCode(
+    challengeId: string,
+    code: string,
+    requestId?: string,
+    device?: DeviceContext
+  ): Promise<{ redirect: string } | { verified: true }> {
+    if (requestId !== undefined) await this.assertAuthRequest(requestId);
+    const challenge = await this.emailCodes.check(challengeId, code, requestId);
+    await this.repo.users.markEmailVerified(challenge.userId, challenge.email, new Date());
+    if (challenge.purpose === "verify") return { verified: true };
+    if (requestId === undefined || !device) throw new HttpError(400, "request_id is required for this code");
+    return this.completeAuthRequest(requestId, challenge.userId, {
+      device,
+      method: challenge.reason === "register" ? "registration" : "password+email_code"
+    });
+  }
+
+  // ---------------------------------------------------------------- devices
+
+  listDevices(userId: string, currentDeviceId?: string) {
+    return this.devices.list(userId, currentDeviceId);
+  }
+
+  removeDevice(userId: string, deviceId: string, currentDeviceId?: string) {
+    return this.devices.remove(userId, deviceId, currentDeviceId);
+  }
+
+  signOutDevice(userId: string, deviceId: string, currentDeviceId?: string) {
+    return this.devices.signOut(userId, deviceId, currentDeviceId);
   }
 
   // ---------------------------------------------------------------- profile
@@ -158,6 +250,8 @@ export class AuthService implements TokenAuthenticator {
   /** Input is validated by `updateAccountBody`; preferredLang is re-checked against the stored profiles. */
   async updateAccount(userId: string, update: UpdateAccountBody): Promise<Account> {
     const user = await this.requireUser(userId);
+    // a new address has to be proven again
+    const emailChanged = update.email !== undefined && update.email !== user.email;
     const profiles = update.profiles ?? user.profiles;
     let preferredLang = update.preferredLang;
     if (typeof preferredLang === "string" && !profiles.some((n) => n.lang === preferredLang)) {
@@ -168,7 +262,11 @@ export class AuthService implements TokenAuthenticator {
       preferredLang = null;
     }
     try {
-      await this.repo.users.updateAccount(userId, { ...update, preferredLang });
+      await this.repo.users.updateAccount(userId, {
+        ...update,
+        preferredLang,
+        ...(emailChanged ? { emailVerifiedAt: null } : {})
+      });
     } catch (error) {
       throw this.conflict(error);
     }
@@ -202,18 +300,42 @@ export class AuthService implements TokenAuthenticator {
     }
     if (granted.has("email") && user.email) {
       claims.email = user.email;
-      claims.email_verified = false; // addresses are not verified yet
+      claims.email_verified = !!user.emailVerifiedAt;
     }
     return claims;
   }
 
-  async verifyPassword(username: string, password: string): Promise<User> {
-    const user = await this.repo.users.findByUsername(username);
+  /**
+   * Login page, password step. Signing in with an email address always needs the code emailed to it;
+   * with a username, only while the account's email is still unverified (finishing registration).
+   */
+  async loginWithPassword(requestId: string, identifier: string, password: string, device: DeviceContext): Promise<SignInStep> {
+    await this.assertAuthRequest(requestId);
+    const user = await this.verifyPassword(identifier, password);
+    const byEmail = identifier.includes("@");
+    if (user.email && (byEmail || !user.emailVerifiedAt)) {
+      const verify = await this.emailCodes.start({
+        purpose: "signin",
+        reason: byEmail ? "login" : "verify_email",
+        userId: user.id,
+        email: user.email,
+        authRequestId: requestId
+      });
+      return { verify };
+    }
+    return this.completeAuthRequest(requestId, user.id, { device, method: "password" });
+  }
+
+  /** `identifier` is a username, or an email address when it contains "@" (both already lowercased). */
+  async verifyPassword(identifier: string, password: string): Promise<User> {
+    const user = identifier.includes("@")
+      ? await this.repo.users.findByEmail(identifier)
+      : await this.repo.users.findByUsername(identifier);
     const credential = user?.credentials.find(isPassword);
     // runs even without a credential, so timing does not reveal whether the user exists
     const result = await this.hasher.verify(credential, password);
     if (!user || !credential || !result.ok) {
-      throw new HttpError(401, "Invalid username or password", "access_denied");
+      throw new HttpError(401, "Invalid username, email or password", "access_denied");
     }
     if (result.needsRehash) {
       const { value, algorithm } = await this.hasher.hash(password);
@@ -270,12 +392,13 @@ export class AuthService implements TokenAuthenticator {
     }
   }
 
-  /** User authenticated: consume the authorization request and issue a one-time code. */
-  async completeAuthRequest(requestId: string, userId: string): Promise<{ redirect: string }> {
+  /** User authenticated: consume the authorization request, record the device and issue a one-time code. */
+  async completeAuthRequest(requestId: string, userId: string, signIn: SignIn): Promise<{ redirect: string }> {
     const req = await this.repo.authRequests.consumeActive(requestId, new Date());
     if (!req) {
       throw new HttpError(400, "Authorization request expired or not found — please start sign-in again");
     }
+    const deviceId = await this.devices.recordSignIn(userId, signIn.device, signIn.method);
     const code = randomToken();
     await this.repo.authCodes.create({
       id: sha256(code),
@@ -287,6 +410,7 @@ export class AuthService implements TokenAuthenticator {
       familyId: randomToken(16),
       ...(req.nonce !== undefined ? { nonce: req.nonce } : {}),
       authTime: new Date(),
+      deviceId,
       used: false,
       expiresAt: expiresIn(AUTH_CODE_TTL_MS)
     });
@@ -325,7 +449,8 @@ export class AuthService implements TokenAuthenticator {
     }
     return this.issueTokens(codeDoc.userId, codeDoc.clientId, codeDoc.scope, codeDoc.familyId, {
       authTime: codeDoc.authTime ?? new Date(),
-      nonce: codeDoc.nonce
+      nonce: codeDoc.nonce,
+      deviceId: codeDoc.deviceId
     });
   }
 
@@ -356,9 +481,13 @@ export class AuthService implements TokenAuthenticator {
       }
       scope = requested;
     }
+    if (current.deviceId) {
+      await this.devices.touch(current.deviceId).catch((e) => console.error("device touch failed", e));
+    }
     // OIDC Core §12.2: refreshed ID Tokens keep auth_time; nonce is not repeated
     return this.issueTokens(current.userId, current.clientId, scope, current.familyId, {
-      authTime: current.authTime ?? new Date()
+      authTime: current.authTime ?? new Date(),
+      deviceId: current.deviceId
     });
   }
 
@@ -379,7 +508,14 @@ export class AuthService implements TokenAuthenticator {
     if (!token) return null;
     const user = await this.repo.users.findById(token.userId);
     if (!user) return null;
-    return { id: user.id, username: user.username, scope: token.scope, clientId: token.clientId, roles: user.roles };
+    return {
+      id: user.id,
+      username: user.username,
+      scope: token.scope,
+      clientId: token.clientId,
+      roles: user.roles,
+      ...(token.deviceId !== undefined ? { deviceId: token.deviceId } : {})
+    };
   }
 
   // ---------------------------------------------------------------- helpers
@@ -403,19 +539,21 @@ export class AuthService implements TokenAuthenticator {
     clientId: string,
     scope: string,
     familyId: string,
-    session: { authTime: Date; nonce?: string }
+    session: { authTime: Date; nonce?: string; deviceId?: string }
   ): Promise<TokenResponse> {
     const accessToken = randomToken();
     const refreshToken = randomToken();
     const { accessTokenTtlSec, refreshTokenTtlSec } = this.oauth;
+    const device = session.deviceId !== undefined ? { deviceId: session.deviceId } : {};
     await this.repo.tokens.createPair(
-      { id: sha256(accessToken), userId, clientId, scope, familyId, expiresAt: expiresIn(accessTokenTtlSec * 1000) },
+      { id: sha256(accessToken), userId, clientId, scope, familyId, ...device, expiresAt: expiresIn(accessTokenTtlSec * 1000) },
       {
         id: sha256(refreshToken),
         userId,
         clientId,
         scope,
         familyId,
+        ...device,
         revoked: false,
         authTime: session.authTime,
         expiresAt: expiresIn(refreshTokenTtlSec * 1000)

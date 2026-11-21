@@ -8,6 +8,8 @@ export interface User {
   username: string;
   /** Lowercased, unique. Optional only for accounts created before email was collected. */
   email?: string;
+  /** When `email` was last proven to belong to the user (emailed code). Unset = unverified. */
+  emailVerifiedAt?: Date;
   /** Per-language profile (name, ...) in one or more languages; at most one entry per `lang`. */
   profiles: LocalizedProfile[];
   /** Language of the profile to display; always one of `profiles[].lang` when set. */
@@ -41,6 +43,8 @@ export interface LocalizedProfile {
 /** Account fields a user can change; omitted fields stay as they are, `preferredLang: null` clears it. */
 export interface AccountUpdate {
   email?: string;
+  /** Set by the service, never by the client: `null` marks the (new) email unverified. */
+  emailVerifiedAt?: Date | null;
   profiles?: LocalizedProfile[];
   preferredLang?: string | null;
 }
@@ -123,6 +127,8 @@ export interface AuthCode {
   nonce?: string;
   /** When the user authenticated (ID Token auth_time). Optional only for rows written before OIDC. */
   authTime?: Date;
+  /** Device the user signed in from; carried into the tokens so a device can be signed out. */
+  deviceId?: string;
   used: boolean;
   expiresAt: Date;
 }
@@ -133,6 +139,8 @@ export interface AccessToken {
   clientId: string;
   scope: string;
   familyId: string;
+  /** Device that signed in (absent for tokens issued before devices were tracked). */
+  deviceId?: string;
   expiresAt: Date;
 }
 
@@ -140,4 +148,72 @@ export interface RefreshToken extends AccessToken {
   revoked: boolean;
   /** Original authentication time, carried into ID Tokens issued on refresh. */
   authTime?: Date;
+}
+
+// ---------------------------------------------------------------- email codes
+
+/**
+ * "signin": a step of the login page, bound to an authorization request — confirming it signs the user in.
+ * "verify": only proves the address (account page / API registration); confirming it signs nobody in.
+ */
+export type EmailChallengePurpose = "signin" | "verify";
+/** Why the code was sent: picks the email wording and the sign-in method recorded for the device. */
+export type EmailChallengeReason = "register" | "verify_email" | "login";
+
+/** A one-time code sent to an email address. Only a hash of the code is stored. */
+export interface EmailChallenge {
+  id: string;
+  purpose: EmailChallengePurpose;
+  reason: EmailChallengeReason;
+  userId: string;
+  /** Address the code went to; it is marked verified only if the user still has this address. */
+  email: string;
+  codeHash: string;
+  /** Wrong codes entered so far. */
+  attempts: number;
+  /** Times a code was emailed for this challenge (first send + resends). */
+  sends: number;
+  sentAt: Date;
+  authRequestId?: string;
+  expiresAt: Date;
+}
+
+// ---------------------------------------------------------------- devices
+
+export const SIGN_IN_METHODS = ["password", "password+email_code", "passkey", "registration"] as const;
+export type SignInMethod = (typeof SIGN_IN_METHODS)[number];
+
+/**
+ * A browser a user has signed in from. Recognized by a random key in an httpOnly cookie (only its hash
+ * is stored), so one record per (user, browser).
+ */
+export interface Device {
+  id: string;
+  userId: string;
+  /** sha256 of the device cookie. */
+  keyHash: string;
+  /** Human-readable, e.g. "Chrome on macOS" (derived from the User-Agent). */
+  name: string;
+  userAgent: string;
+  /** Client address of the latest sign-in. */
+  ip?: string;
+  /** First sign-in from this device. */
+  createdAt: Date;
+  lastSignInAt: Date;
+  /** Latest sign-in or token refresh. */
+  lastSeenAt: Date;
+  lastMethod: SignInMethod;
+  signIns: number;
+}
+
+/** What a sign-in records about the device (`id` is used only when the device is new). */
+export interface DeviceSignIn {
+  id: string;
+  userId: string;
+  keyHash: string;
+  name: string;
+  userAgent: string;
+  ip?: string;
+  at: Date;
+  method: SignInMethod;
 }

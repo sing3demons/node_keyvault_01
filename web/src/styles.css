@@ -552,3 +552,50 @@ select {
 .check {
   white-space: nowrap;
 }
+
+/* ---------- email codes & devices ---------- */
+.badge-ok {
+  background: var(--success-soft);
+  color: var(--success);
+}
+.badge-warn {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.code-input {
+  font: 600 22px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+  letter-spacing: 0.4em;
+  text-align: center;
+}
+.code-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.device-list {
+  display: grid;
+  gap: 10px;
+}
+.device-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--border);
+}
+.device-row:first-child {
+  border-top: 0;
+}
+.device-main {
+  flex: 1;
+  min-width: 0;
+}
+.device-main .hint {
+  overflow-wrap: anywhere;
+}
+.device-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
