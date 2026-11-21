@@ -36,6 +36,20 @@
       "when": 1795251012855,
       "tag": "0004_oidc",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1795253245717,
+      "tag": "0005_secret_acls",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1795254137739,
+      "tag": "0006_user_roles",
+      "breakpoints": true
     }
   ]
 }

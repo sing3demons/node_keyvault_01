@@ -3,6 +3,7 @@
 
 import { z } from "zod";
 import { formatZodError } from "../shared/http.js";
+import { ROLES } from "./model.js";
 import { OAuthError } from "./oauth.js";
 
 const nonEmpty = z.string().min(1);
@@ -120,6 +121,13 @@ export const passkeyRegisterVerifyBody = z.object({
 export const credentialIdParam = z.object({
   id: nonEmpty
 });
+
+// ---------------------------------------------------------------- /admin
+
+export const usernameParam = z.object({ username: z.string().trim().toLowerCase().min(1).max(64) });
+
+/** PUT /admin/users/:username/roles — the complete new role list ([] = regular user). */
+export const setRolesBody = z.object({ roles: z.array(z.enum(ROLES)).max(ROLES.length) });
 
 export type RegisterBody = z.infer<typeof registerBody>;
 export type UpdateAccountBody = z.infer<typeof updateAccountBody>;

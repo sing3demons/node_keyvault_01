@@ -14,6 +14,20 @@ export interface User {
   preferredLang?: string;
   /** Every way this user can authenticate. A user always keeps at least one. */
   credentials: Credential[];
+  /** Authorization roles; empty for regular users. */
+  roles: Role[];
+  createdAt: Date;
+}
+
+export const ROLES = ["admin"] as const;
+export type Role = (typeof ROLES)[number];
+
+/** Lightweight user row for admin listings (no profiles or credentials). */
+export interface UserSummary {
+  id: string;
+  username: string;
+  email?: string;
+  roles: Role[];
   createdAt: Date;
 }
 

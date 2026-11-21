@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { api, LANGUAGES, type Account, type SecretSummary } from "./api";
-import { CopyIcon, EditIcon, EyeIcon, EyeOffIcon, TrashIcon } from "./icons";
+import { api, LANGUAGES, PERMISSIONS, type Account, type AdminUser, type Grant, type Permission, type SecretSummary } from "./api";
+import { CopyIcon, EditIcon, EyeIcon, EyeOffIcon, LockIcon, ShareIcon, TransferIcon, TrashIcon } from "./icons";
 
 const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
 const steps: [number, Intl.RelativeTimeFormatUnit][] = [
@@ -45,11 +45,14 @@ interface RowProps {
   secret: SecretSummary;
   onEdit: () => void;
   onDelete: () => void;
+  onShare: () => void;
+  onTransfer: () => void;
   onError: (message: string) => void;
   onCopied: () => void;
 }
 
-export function SecretRow({ secret, onEdit, onDelete, onError, onCopied }: RowProps) {
+export function SecretRow({ secret, onEdit, onDelete, onShare, onTransfer, onError, onCopied }: RowProps) {
+  const { access } = secret;
   const [value, setValue] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -75,42 +78,67 @@ export function SecretRow({ secret, onEdit, onDelete, onError, onCopied }: RowPr
           {!secret.enabled && <span className="badge">disabled</span>}
         </div>
         <div className="meta" title={secret.updatedOn && new Date(secret.updatedOn).toLocaleString()}>
-          Updated {timeAgo(secret.updatedOn)}
+          Updated {timeAgo(secret.updatedOn)} · {access.owner ? "owned by you" : `owner @${secret.owner?.username ?? "unknown"}`}
+          {!access.owner && (access.read || access.write || access.delete) && <span className="badge">shared with you</span>}
         </div>
       </div>
 
       <div className="value mono">
-        {value === null ? <span className="masked">••••••••••••</span> : <span title={value}>{value}</span>}
-        <button
-          className="icon-btn"
-          disabled={busy}
-          title={value === null ? "Show value" : "Hide value"}
-          onClick={() => (value === null ? withValue(setValue) : setValue(null))}
-        >
-          {value === null ? <EyeIcon /> : <EyeOffIcon />}
-        </button>
+        {access.read ? (
+          <>
+            {value === null ? <span className="masked">••••••••••••</span> : <span title={value}>{value}</span>}
+            <button
+              className="icon-btn"
+              disabled={busy}
+              title={value === null ? "Show value" : "Hide value"}
+              onClick={() => (value === null ? withValue(setValue) : setValue(null))}
+            >
+              {value === null ? <EyeIcon /> : <EyeOffIcon />}
+            </button>
+          </>
+        ) : (
+          <span className="masked locked" title="Only the owner, or people they share it with, can see the value">
+            <LockIcon /> no access
+          </span>
+        )}
       </div>
 
       <div className="actions">
-        <button
-          className="icon-btn"
-          disabled={busy}
-          title="Copy value"
-          onClick={() =>
-            withValue(async (v) => {
-              await navigator.clipboard.writeText(v);
-              onCopied();
-            })
-          }
-        >
-          <CopyIcon />
-        </button>
-        <button className="icon-btn" title="Edit" onClick={onEdit}>
-          <EditIcon />
-        </button>
-        <button className="icon-btn danger" title="Delete" onClick={onDelete}>
-          <TrashIcon />
-        </button>
+        {access.read && (
+          <button
+            className="icon-btn"
+            disabled={busy}
+            title="Copy value"
+            onClick={() =>
+              withValue(async (v) => {
+                await navigator.clipboard.writeText(v);
+                onCopied();
+              })
+            }
+          >
+            <CopyIcon />
+          </button>
+        )}
+        {access.write && (
+          <button className="icon-btn" title="Edit" onClick={onEdit}>
+            <EditIcon />
+          </button>
+        )}
+        {access.share && (
+          <button className="icon-btn" title="Share" onClick={onShare}>
+            <ShareIcon />
+          </button>
+        )}
+        {access.transfer && (
+          <button className="icon-btn" title={access.owner ? "Transfer ownership" : "Transfer ownership (admin)"} onClick={onTransfer}>
+            <TransferIcon />
+          </button>
+        )}
+        {access.delete && (
+          <button className="icon-btn danger" title="Delete" onClick={onDelete}>
+            <TrashIcon />
+          </button>
+        )}
       </div>
     </div>
   );
@@ -122,34 +150,36 @@ interface EditProps {
   open: boolean;
   /** name of the secret being edited; null = create */
   editing: string | null;
+  /** false when the user may overwrite but not read the current value */
+  canRead?: boolean;
   existingNames: string[];
   onClose: () => void;
   onSaved: (name: string, created: boolean) => void;
 }
 
-export function EditDialog({ open, editing, existingNames, onClose, onSaved }: EditProps) {
+export function EditDialog({ open, editing, canRead = true, existingNames, onClose, onSaved }: EditProps) {
   return (
     <Modal open={open} onClose={onClose}>
-      <EditForm editing={editing} existingNames={existingNames} onClose={onClose} onSaved={onSaved} />
+      <EditForm editing={editing} canRead={canRead} existingNames={existingNames} onClose={onClose} onSaved={onSaved} />
     </Modal>
   );
 }
 
-function EditForm({ editing, existingNames, onClose, onSaved }: Omit<EditProps, "open">) {
+function EditForm({ editing, canRead = true, existingNames, onClose, onSaved }: Omit<EditProps, "open">) {
   const [name, setName] = useState(editing ?? "");
   const [value, setValue] = useState("");
   const [error, setError] = useState("");
-  const [loading, setLoading] = useState(!!editing);
+  const [loading, setLoading] = useState(!!editing && canRead);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (!editing) return;
+    if (!editing || !canRead) return;
     api
       .get(editing)
       .then(setValue)
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
-  }, [editing]);
+  }, [editing, canRead]);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -199,7 +229,7 @@ function EditForm({ editing, existingNames, onClose, onSaved }: Omit<EditProps, 
             autoFocus={!!editing}
             required
             disabled={loading}
-            placeholder={loading ? "Loading…" : "secret value"}
+            placeholder={loading ? "Loading…" : editing && !canRead ? "Current value is hidden — enter a new value" : "secret value"}
           />
         </label>
         <div className="error-text">{error}</div>
@@ -389,5 +419,258 @@ function AccountForm({ account, onClose, onSaved }: { account: Account } & Pick<
         </button>
       </div>
     </form>
+  );
+}
+
+/* ---------- share (owner grants read / write / delete) ---------- */
+
+const PERMISSION_LABELS: Record<Permission, string> = { read: "View", write: "Edit", delete: "Delete" };
+
+interface ShareProps {
+  name: string | null;
+  onClose: () => void;
+  onError: (message: string) => void;
+}
+
+export function ShareDialog({ name, onClose, onError }: ShareProps) {
+  return (
+    <Modal open={name !== null} onClose={onClose}>
+      {name && <ShareForm key={name} name={name} onClose={onClose} onError={onError} />}
+    </Modal>
+  );
+}
+
+function ShareForm({ name, onClose, onError }: { name: string } & Omit<ShareProps, "name">) {
+  const [grants, setGrants] = useState<Grant[] | null>(null);
+  const [username, setUsername] = useState("");
+  const [newPerms, setNewPerms] = useState<Permission[]>(["read"]);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api
+      .grants(name)
+      .then(setGrants)
+      .catch((e: Error) => onError(e.message));
+  }, [name, onError]);
+
+  const run = async (fn: () => Promise<Grant[]>) => {
+    setBusy(true);
+    setError("");
+    try {
+      setGrants(await fn());
+      return true;
+    } catch (e) {
+      setError((e as Error).message);
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggle = (list: Permission[], p: Permission) => (list.includes(p) ? list.filter((x) => x !== p) : [...list, p]);
+
+  const add = async (event: FormEvent) => {
+    event.preventDefault();
+    if (newPerms.length === 0) return setError("Pick at least one permission.");
+    if (await run(() => api.setGrant(name, username.trim(), newPerms))) {
+      setUsername("");
+      setNewPerms(["read"]);
+    }
+  };
+
+  return (
+    <form onSubmit={add}>
+      <div className="dlg-body">
+        <h2>
+          Share <span className="mono">{name}</span>
+        </h2>
+        <p className="hint">Everyone signed in can see this secret's name. Only people listed here can do more.</p>
+        {grants === null ? (
+          <div className="skeleton" />
+        ) : grants.length === 0 ? (
+          <p className="hint">Not shared with anyone yet.</p>
+        ) : (
+          <div className="grant-list">
+            {grants.map((g) => (
+              <div className="grant-row" key={g.user.id}>
+                <span className="mono">@{g.user.username}</span>
+                {PERMISSIONS.map((p) => (
+                  <label className="check" key={p}>
+                    <input
+                      type="checkbox"
+                      checked={g.permissions.includes(p)}
+                      disabled={busy}
+                      onChange={() => run(() => api.setGrant(name, g.user.username, toggle(g.permissions, p)))}
+                    />
+                    {PERMISSION_LABELS[p]}
+                  </label>
+                ))}
+                <button
+                  type="button"
+                  className="icon-btn danger"
+                  title="Remove access"
+                  disabled={busy}
+                  onClick={() => run(() => api.removeGrant(name, g.user.username))}
+                >
+                  <TrashIcon />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="grant-row add">
+          <input placeholder="username" value={username} onChange={(e) => setUsername(e.target.value)} required />
+          {PERMISSIONS.map((p) => (
+            <label className="check" key={p}>
+              <input type="checkbox" checked={newPerms.includes(p)} onChange={() => setNewPerms((l) => toggle(l, p))} />
+              {PERMISSION_LABELS[p]}
+            </label>
+          ))}
+          <button type="submit" className="btn-primary" disabled={busy || !username.trim()}>
+            Add
+          </button>
+        </div>
+        <div className="error-text">{error}</div>
+      </div>
+      <div className="dlg-foot">
+        <button type="button" className="btn-ghost" onClick={onClose}>
+          Done
+        </button>
+      </div>
+    </form>
+  );
+}
+
+/* ---------- transfer ownership (owner, or admin) ---------- */
+
+interface TransferProps {
+  secret: SecretSummary | null;
+  onClose: () => void;
+  onTransferred: (name: string, newOwner: string) => void;
+}
+
+export function TransferDialog({ secret, onClose, onTransferred }: TransferProps) {
+  return (
+    <Modal open={secret !== null} onClose={onClose}>
+      {secret && <TransferForm key={secret.name} secret={secret} onClose={onClose} onTransferred={onTransferred} />}
+    </Modal>
+  );
+}
+
+function TransferForm({ secret, onClose, onTransferred }: { secret: SecretSummary } & Omit<TransferProps, "secret">) {
+  const [username, setUsername] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      const { owner } = await api.transferOwnership(secret.name, username.trim());
+      onTransferred(secret.name, owner.username);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit}>
+      <div className="dlg-body">
+        <h2>
+          Transfer <span className="mono">{secret.name}</span>
+        </h2>
+        <p className="hint">
+          Current owner: @{secret.owner?.username ?? "unknown"}.{" "}
+          {secret.access.owner
+            ? "You will lose all access unless the new owner shares it back."
+            : "As an admin you can reassign the owner, but you still cannot see the value."}
+        </p>
+        <label>
+          New owner (username)
+          <input value={username} onChange={(e) => setUsername(e.target.value)} autoFocus required />
+        </label>
+        <div className="error-text">{error}</div>
+      </div>
+      <div className="dlg-foot">
+        <button type="button" className="btn-ghost" onClick={onClose}>
+          Cancel
+        </button>
+        <button type="submit" className="btn-primary" disabled={busy || !username.trim()}>
+          {busy ? "Transferring…" : "Transfer"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
+/* ---------- users & roles (admin) ---------- */
+
+export function UsersDialog({ open, currentUserId, onClose }: { open: boolean; currentUserId?: string; onClose: () => void }) {
+  return (
+    <Modal open={open} onClose={onClose}>
+      {open && <UsersPanel currentUserId={currentUserId} onClose={onClose} />}
+    </Modal>
+  );
+}
+
+function UsersPanel({ currentUserId, onClose }: { currentUserId?: string; onClose: () => void }) {
+  const [users, setUsers] = useState<AdminUser[] | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+
+  useEffect(() => {
+    api
+      .adminUsers()
+      .then(setUsers)
+      .catch((e: Error) => setError(e.message));
+  }, []);
+
+  const toggleAdmin = async (u: AdminUser) => {
+    const roles = u.roles.includes("admin") ? u.roles.filter((r) => r !== "admin") : [...u.roles, "admin"];
+    setBusy(u.id);
+    setError("");
+    try {
+      const updated = await api.setRoles(u.username, roles);
+      setUsers((list) => list?.map((x) => (x.id === u.id ? updated : x)) ?? null);
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div>
+      <div className="dlg-body">
+        <h2>Users</h2>
+        <p className="hint">Admins can transfer ownership of any secret. They cannot read values they were not given.</p>
+        {users === null ? (
+          <div className="skeleton" />
+        ) : (
+          <div className="grant-list">
+            {users.map((u) => (
+              <div className="grant-row" key={u.id}>
+                <span className="mono">@{u.username}</span>
+                <span className="hint">{u.email ?? ""}</span>
+                <label className="check push-right">
+                  <input type="checkbox" checked={u.roles.includes("admin")} disabled={busy !== null} onChange={() => toggleAdmin(u)} />
+                  Admin{u.id === currentUserId ? " (you)" : ""}
+                </label>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="error-text">{error}</div>
+      </div>
+      <div className="dlg-foot">
+        <button type="button" className="btn-ghost" onClick={onClose}>
+          Done
+        </button>
+      </div>
+    </div>
   );
 }

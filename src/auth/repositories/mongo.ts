@@ -9,7 +9,9 @@ import type {
   LocalizedProfile,
   AccountUpdate,
   RefreshToken,
+  Role,
   User,
+  UserSummary,
   WebAuthnChallenge,
   WebAuthnCredential
 } from "../model.js";
@@ -52,6 +54,7 @@ const userFromDoc = (doc: Document | null): User | null => {
     ...(typeof doc.email === "string" ? { email: doc.email } : {}),
     profiles: ((doc.profiles ?? []) as LocalizedProfile[]).map(({ lang, firstName, lastName }) => ({ lang, firstName, lastName })),
     ...(typeof doc.preferredLang === "string" ? { preferredLang: doc.preferredLang } : {}),
+    roles: Array.isArray(doc.roles) ? (doc.roles as Role[]) : [],
     createdAt: doc.createdAt,
     credentials: ((doc.credentials ?? []) as CredentialElement[]).map(fromElement)
   };
@@ -111,6 +114,7 @@ export class MongoAuthRepository implements AuthRepository {
         ...(user.email !== undefined ? { email: user.email } : {}),
         profiles: user.profiles,
         ...(user.preferredLang !== undefined ? { preferredLang: user.preferredLang } : {}),
+        roles: user.roles,
         createdAt: user.createdAt,
         credentials: user.credentials.map((c) => toElement(user.id, c))
       };
@@ -135,6 +139,22 @@ export class MongoAuthRepository implements AuthRepository {
       }
     },
     findById: async (id: string) => userFromDoc(await this.users$.findOne({ _id: this.byId(id) })),
+    list: async (): Promise<UserSummary[]> =>
+      (
+        await this.users$
+          .find({}, { projection: { username: 1, email: 1, roles: 1, createdAt: 1 } })
+          .sort({ createdAt: 1 })
+          .toArray()
+      ).map((d) => ({
+        id: (d._id as unknown) instanceof ObjectId ? (d._id as unknown as ObjectId).toHexString() : String(d._id),
+        username: d.username,
+        ...(typeof d.email === "string" ? { email: d.email } : {}),
+        roles: Array.isArray(d.roles) ? d.roles : [],
+        createdAt: d.createdAt
+      })),
+    setRoles: async (userId: string, roles: Role[]) => {
+      await this.users$.updateOne({ _id: this.byId(userId) }, { $set: { roles } });
+    },
     findByUsername: async (username: string) => userFromDoc(await this.users$.findOne({ username })),
     findByWebAuthnCredId: async (credId: string) => {
       const user = userFromDoc(await this.users$.findOne({ "credentials.key": `webauthn:${credId}` }));

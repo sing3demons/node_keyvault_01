@@ -505,3 +505,50 @@ select {
     grid-template-columns: 1fr;
   }
 }
+
+/* ownership / sharing */
+.meta .badge {
+  margin-left: 6px;
+}
+.masked.locked {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 12px;
+}
+.grant-list {
+  display: grid;
+  gap: 6px;
+}
+.grant-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.grant-row > .mono {
+  min-width: 120px;
+  font-size: 13px;
+}
+.grant-row.add {
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+.grant-row.add input:not([type="checkbox"]) {
+  flex: 1;
+  min-width: 140px;
+}
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-weight: 500;
+}
+.push-right {
+  margin-left: auto;
+}
+.check {
+  white-space: nowrap;
+}

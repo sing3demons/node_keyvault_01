@@ -6,7 +6,7 @@ import type { AuthenticatedUser, TokenAuthenticator } from "../shared/middleware
 import { expiresIn } from "../shared/util.js";
 import { OAuthError, verifyPkceS256 } from "./oauth.js";
 import { OIDC_SCOPES, type IdTokenIssuer } from "./oidc.js";
-import { displayProfile, isPassword, type LocalizedProfile, type User } from "./model.js";
+import { displayProfile, isPassword, type LocalizedProfile, type Role, type User, type UserSummary } from "./model.js";
 import { DuplicateKeyError, type AuthRepository } from "./repository.js";
 import type { RegisterBody, UpdateAccountBody } from "./schemas.js";
 
@@ -54,8 +54,26 @@ export interface Account {
   preferredLang?: string;
   /** Profile in preferredLang, else the first one. */
   displayProfile?: LocalizedProfile;
+  roles: Role[];
   createdAt: string;
 }
+
+/** Admin listing row. */
+export interface UserView {
+  id: string;
+  username: string;
+  email?: string;
+  roles: Role[];
+  createdAt: string;
+}
+
+const toUserView = (u: UserSummary): UserView => ({
+  id: u.id,
+  username: u.username,
+  ...(u.email !== undefined ? { email: u.email } : {}),
+  roles: u.roles,
+  createdAt: u.createdAt.toISOString()
+});
 
 /** OpenID Connect UserInfo claims (OIDC Core §5.1), with per-language profiles as "claim#lang" (§5.2). */
 export type UserInfoClaims = Record<string, string | boolean>;
@@ -67,6 +85,7 @@ const toAccount = (u: User): Account => ({
   profiles: u.profiles,
   ...(u.preferredLang !== undefined ? { preferredLang: u.preferredLang } : {}),
   ...(displayProfile(u) ? { displayProfile: displayProfile(u) } : {}),
+  roles: u.roles,
   createdAt: u.createdAt.toISOString()
 });
 
@@ -75,8 +94,37 @@ export class AuthService implements TokenAuthenticator {
     private readonly repo: AuthRepository,
     private readonly hasher: SecretHasher,
     private readonly oauth: OAuthSettings,
-    private readonly idTokens: IdTokenIssuer
+    private readonly idTokens: IdTokenIssuer,
+    /** Bootstrap admins (ADMIN_USERNAMES), lowercased. */
+    private readonly adminUsernames: readonly string[] = []
   ) {}
+
+  // ---------------------------------------------------------------- roles
+
+  /** Startup: give the admin role to ADMIN_USERNAMES users that already exist. */
+  async bootstrapAdmins(): Promise<void> {
+    for (const username of this.adminUsernames) {
+      const user = await this.repo.users.findByUsername(username);
+      if (user && !user.roles.includes("admin")) await this.repo.users.setRoles(user.id, [...user.roles, "admin"]);
+    }
+  }
+
+  async listUsers(): Promise<UserView[]> {
+    return (await this.repo.users.list()).map(toUserView);
+  }
+
+  /** Admin only (enforced by the route). The last admin cannot lose the role, so nobody gets locked out. */
+  async setUserRoles(username: string, roles: Role[]): Promise<UserView> {
+    const target = await this.repo.users.findByUsername(username.trim().toLowerCase());
+    if (!target) throw new HttpError(404, `User "${username}" not found`);
+    const next = [...new Set(roles)];
+    if (target.roles.includes("admin") && !next.includes("admin")) {
+      const admins = (await this.repo.users.list()).filter((u) => u.roles.includes("admin"));
+      if (admins.length <= 1) throw new HttpError(409, "Cannot remove the last admin", "conflict");
+    }
+    await this.repo.users.setRoles(target.id, next);
+    return toUserView({ ...target, roles: next });
+  }
 
   // ---------------------------------------------------------------- users
 
@@ -90,6 +138,7 @@ export class AuthService implements TokenAuthenticator {
       profiles,
       ...(preferredLang !== undefined ? { preferredLang } : {}),
       credentials: [{ id: randomUUID(), type: "password", ...(await this.hasher.hash(password)), createdAt: now }],
+      roles: this.adminUsernames.includes(username) ? ["admin"] : [],
       createdAt: now
     };
     try {
@@ -330,7 +379,7 @@ export class AuthService implements TokenAuthenticator {
     if (!token) return null;
     const user = await this.repo.users.findById(token.userId);
     if (!user) return null;
-    return { id: user.id, username: user.username, scope: token.scope, clientId: token.clientId };
+    return { id: user.id, username: user.username, scope: token.scope, clientId: token.clientId, roles: user.roles };
   }
 
   // ---------------------------------------------------------------- helpers

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PERMISSIONS } from "./acl.js";
 
 /** Azure Key Vault secret names: 1-127 characters, letters, digits and dashes. */
 export const secretNameParam = z.object({
@@ -19,3 +20,16 @@ export const setSecretBody = z.object({
 
 export type SecretName = z.infer<typeof secretNameParam>["name"];
 export type SetSecretBody = z.infer<typeof setSecretBody>;
+
+/** PUT /secrets/:name/grants/:username */
+export const grantParams = secretNameParam.extend({
+  username: z.string().trim().min(1).max(64)
+});
+
+export const setGrantBody = z.object({
+  /** Empty list = revoke. Seeing the name needs no grant. */
+  permissions: z.array(z.enum(PERMISSIONS)).max(PERMISSIONS.length)
+});
+
+/** PUT /secrets/:name/owner */
+export const transferBody = z.object({ username: z.string().trim().min(1).max(64) });

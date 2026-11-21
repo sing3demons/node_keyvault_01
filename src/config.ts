@@ -34,6 +34,9 @@ class Config {
     refreshTokenTtlSec: number;
   };
 
+  /** Usernames that get the admin role (at startup for existing users, at registration for new ones). */
+  adminUsernames: string[];
+
   oidc: {
     issuer: string;
     idTokenTtlSec: number;
@@ -77,6 +80,8 @@ class Config {
       accessTokenTtlSec: Number(process.env.ACCESS_TOKEN_TTL ?? 900),
       refreshTokenTtlSec: Number(process.env.REFRESH_TOKEN_TTL ?? 60 * 60 * 24 * 30)
     };
+
+    this.adminUsernames = list(process.env.ADMIN_USERNAMES, []).map((u) => u.toLowerCase());
 
     this.oidc = {
       issuer: process.env.OIDC_ISSUER ?? `http://localhost:${this.port}`,

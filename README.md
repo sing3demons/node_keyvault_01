@@ -123,9 +123,18 @@ Flow: UI → `GET /oauth/authorize` → redirect ไป `/login?request_id=…` 
 - `POST /auth/webauthn/login/options` · `POST /auth/webauthn/login/verify`
 - `POST /auth/webauthn/register/options` · `POST /auth/webauthn/register/verify` · `GET/DELETE /auth/webauthn/credentials` (Bearer)
 
-Secrets (ต้องมี Bearer token):
+Admin (ต้องมี role `admin`):
 
-- `GET /secrets` (list ชื่อ + วันที่ ไม่มี value)
-- `GET /secrets/:name`
-- `PUT /secrets/:name` body: `{ "value": "..." }`
-- `DELETE /secrets/:name`
+- admin กลุ่มแรกมาจาก `ADMIN_USERNAMES` ใน `.env` (ใช้ตอน start และตอน register)
+- `GET /admin/users` · `PUT /admin/users/:username/roles` body `{ "roles": ["admin"] }` — ถอด admin คนสุดท้ายไม่ได้; role ตรวจจาก DB ทุก request (ถอดแล้วมีผลทันที)
+
+Secrets (ต้องมี Bearer token) — ค่าเก็บใน Key Vault, เจ้าของ/สิทธิ์เก็บใน DB ของแอป (`secret_acls`):
+
+- คนสร้างเป็นเจ้าของ: ดู / แก้ / ลบ / แชร์ได้ — คนอื่นเห็นแค่ชื่อ เว้นแต่เจ้าของให้สิทธิ์ `read` (ดูค่า), `write` (แก้), `delete` (ลบ)
+- ชื่อซ้ำ (ไม่สนตัวพิมพ์) สร้างไม่ได้; secret ใน vault ที่ไม่ได้สร้างผ่านแอปจะไม่แสดงและยึดไม่ได้ (409)
+- `GET /secrets` — ทุก secret: ชื่อ, วันที่, `owner`, `access` ของผู้เรียก (ไม่มี value)
+- `GET /secrets/:name` — value (ต้องมี `read`)
+- `PUT /secrets/:name` body: `{ "value": "..." }` — สร้าง (201, เป็นเจ้าของ) หรือแก้ (204, ต้องมี `write`)
+- `DELETE /secrets/:name` (ต้องมี `delete`)
+- `PUT /secrets/:name/owner` body `{ "username": "..." }` — โอนเจ้าของ: เจ้าของยกให้คนอื่น หรือ admin โอนให้ (admin โอนให้ตัวเองไม่ได้ และอ่านค่าไม่ได้ถ้าไม่ได้รับสิทธิ์); เจ้าของเดิมหมดสิทธิ์
+- `GET /secrets/:name/grants` · `PUT /secrets/:name/grants/:username` body `{ "permissions": ["read","write","delete"] }` · `DELETE /secrets/:name/grants/:username` — เจ้าของเท่านั้น

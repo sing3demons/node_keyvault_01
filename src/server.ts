@@ -6,33 +6,53 @@ import { errorHandler, notFoundHandler } from "./shared/http.js";
 import { KeyVaultService } from "./keyvault/service.js";
 import { KeyVaultController } from "./keyvault/controller.js";
 import { AzureKeyVaultSecretStore, NamedSecret } from "./keyvault/store.js";
+import { createSecretAclRepository } from "./keyvault/repositories/index.js";
 import { createAuthRepository } from "./auth/repositories/index.js";
 import { AuthService } from "./auth/service.js";
 import { IdTokenIssuer, SigningKeyRing } from "./auth/oidc.js";
 import { Argon2idHasher, SecretHasher } from "./shared/hashing.js";
 import { WebAuthnService } from "./auth/webauthn.js";
 import { AuthController } from "./auth/controller.js";
-import { requireAuth, type AuthEnv } from "./shared/middleware.js";
+import { requireAuth, requireRole, type AuthEnv } from "./shared/middleware.js";
 
 async function main() {
   const azureVaultUrl: string = process.env.AZURE_KEYVAULT_URL as string;
   const keyVaultSecretStore = new AzureKeyVaultSecretStore(azureVaultUrl);
-  const keyVaultSecret = new KeyVaultService(keyVaultSecretStore, [config.oidc.keysSecretName]);
-  const keyVaultHandler = new KeyVaultController(keyVaultSecret);
-
-  const authRepo = await createAuthRepository({
+  const dbSettings = {
     driver: config.authDb,
     mongoUrl: config.mongoUrl,
     mongoDb: config.mongoDb,
     databaseUrl: config.databaseUrl,
     migrationsFolder: config.migrationsFolder
-  });
+  };
+  const authRepo = await createAuthRepository(dbSettings);
   await authRepo.init();
+
+  // Secrets: values in Key Vault, ownership/sharing in the app database
+  const secretAcls = await createSecretAclRepository(dbSettings);
+  await secretAcls.init();
+  const userDirectory = {
+    findByUsername: async (username: string) => {
+      const u = await authRepo.users.findByUsername(username);
+      return u && { id: u.id, username: u.username };
+    },
+    findByIds: async (ids: string[]) =>
+      (await Promise.all(ids.map((id) => authRepo.users.findById(id)))).flatMap((u) => (u ? [{ id: u.id, username: u.username }] : []))
+  };
+  const keyVaultSecret = new KeyVaultService(keyVaultSecretStore, secretAcls, userDirectory, [config.oidc.keysSecretName]);
+  const keyVaultHandler = new KeyVaultController(keyVaultSecret);
   // OIDC signing keys live in Key Vault
   const signingKeys = new SigningKeyRing(new NamedSecret(keyVaultSecretStore, config.oidc.keysSecretName), config.oidc);
   await signingKeys.init();
   const idTokens = new IdTokenIssuer(config.oidc, signingKeys);
-  const authService = new AuthService(authRepo, new SecretHasher(new Argon2idHasher()), config.oauth, idTokens);
+  const authService = new AuthService(
+    authRepo,
+    new SecretHasher(new Argon2idHasher()),
+    config.oauth,
+    idTokens,
+    config.adminUsernames
+  );
+  await authService.bootstrapAdmins();
   const webAuthnService = new WebAuthnService(authRepo, config.webauthn);
   const auth = new AuthController(authService, webAuthnService, idTokens);
   const bearer = requireAuth(authService);
@@ -68,6 +88,11 @@ async function main() {
   app.get("/auth/webauthn/credentials", bearer, (c) => auth.listPasskeys(c));
   app.delete("/auth/webauthn/credentials/:id", bearer, (c) => auth.deletePasskey(c));
 
+  // --- Administration
+  app.use("/admin/*", bearer, requireRole("admin"));
+  app.get("/admin/users", (c) => auth.listUsers(c));
+  app.put("/admin/users/:username/roles", (c) => auth.setUserRoles(c));
+
   // --- Secrets (protected)
   app.use("/secrets", bearer);
   app.use("/secrets/*", bearer);
@@ -79,6 +104,13 @@ async function main() {
   app.put("/secrets/:name", keyVaultHandler.setSecret.bind(keyVaultHandler));
 
   app.delete("/secrets/:name", keyVaultHandler.deleteSecret.bind(keyVaultHandler));
+
+  // sharing (owner only)
+  app.get("/secrets/:name/grants", (c) => keyVaultHandler.getGrants(c));
+  app.put("/secrets/:name/grants/:username", (c) => keyVaultHandler.setGrant(c));
+  app.delete("/secrets/:name/grants/:username", (c) => keyVaultHandler.deleteGrant(c));
+  // ownership transfer (owner or admin)
+  app.put("/secrets/:name/owner", (c) => keyVaultHandler.transferOwnership(c));
 
   // React UI (built by `vite build` into dist/public); client-side routes (/login, /callback) fall back to index.html
   app.use("/*", serveStatic({ root: "./dist/public" }));

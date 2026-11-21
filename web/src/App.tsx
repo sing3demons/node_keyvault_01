@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { api, type Account, type SecretSummary } from "./api";
 import { addPasskey, getIdentity, logout, onIdentityChange, passkeysSupported, refresh, startLogin } from "./auth";
-import { AccountDialog, DeleteDialog, EditDialog, SecretRow, Toasts, type Toast } from "./components";
-import { LockIcon, PlusIcon, RefreshIcon, SearchIcon } from "./icons";
+import { AccountDialog, DeleteDialog, EditDialog, SecretRow, ShareDialog, Toasts, TransferDialog, UsersDialog, type Toast } from "./components";
+import { LockIcon, PlusIcon, RefreshIcon, SearchIcon, UsersIcon } from "./icons";
 
 type Health = { state: "loading" } | { state: "ok"; provider: string } | { state: "error" };
 
@@ -13,6 +13,9 @@ export function App() {
   const [health, setHealth] = useState<Health>({ state: "loading" });
   const [editor, setEditor] = useState<{ open: boolean; name: string | null }>({ open: false, name: null });
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [sharing, setSharing] = useState<string | null>(null);
+  const [transferring, setTransferring] = useState<SecretSummary | null>(null);
+  const [usersOpen, setUsersOpen] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [account, setAccount] = useState<Account | null>(null);
   const [accountOpen, setAccountOpen] = useState(false);
@@ -115,6 +118,11 @@ export function App() {
               {shownName}
             </button>
           )}
+          {account?.roles.includes("admin") && (
+            <button className="btn-ghost" onClick={() => setUsersOpen(true)} title="Manage users and admins">
+              <UsersIcon /> <span className="label-text">Users</span>
+            </button>
+          )}
           {passkeysSupported() && (
             <button className="btn-ghost" onClick={onAddPasskey} title="Register a passkey for this account">
               🔑 <span className="label-text">Add passkey</span>
@@ -184,6 +192,8 @@ export function App() {
               secret={s}
               onEdit={() => setEditor({ open: true, name: s.name })}
               onDelete={() => setDeleting(s.name)}
+              onShare={() => setSharing(s.name)}
+              onTransfer={() => setTransferring(s)}
               onError={(m) => toast(m, true)}
               onCopied={() => toast(`Copied “${s.name}” to clipboard`)}
             />
@@ -194,6 +204,7 @@ export function App() {
       <EditDialog
         open={editor.open}
         editing={editor.name}
+        canRead={editor.name === null || !!secrets.find((s) => s.name === editor.name)?.access.read}
         existingNames={secrets.map((s) => s.name)}
         onClose={() => setEditor({ open: false, name: null })}
         onSaved={(name, created) => {
@@ -202,6 +213,20 @@ export function App() {
           load();
         }}
       />
+
+      <ShareDialog name={sharing} onClose={() => setSharing(null)} onError={(m) => toast(m, true)} />
+
+      <TransferDialog
+        secret={transferring}
+        onClose={() => setTransferring(null)}
+        onTransferred={(name, owner) => {
+          setTransferring(null);
+          toast(`“${name}” now belongs to @${owner}`);
+          load();
+        }}
+      />
+
+      <UsersDialog open={usersOpen} currentUserId={account?.id} onClose={() => setUsersOpen(false)} />
 
       <DeleteDialog
         name={deleting}

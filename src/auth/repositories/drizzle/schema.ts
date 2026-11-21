@@ -9,6 +9,10 @@ export const users = pgTable("users", {
   // nullable: accounts created before email was collected (UNIQUE allows many NULLs)
   email: text("email").unique(),
   preferredLang: text("preferred_lang"),
+  roles: text("roles", { enum: ["admin"] })
+    .array()
+    .notNull()
+    .default(sql`'{}'::text[]`),
   createdAt: ts("created_at").notNull()
 });
 

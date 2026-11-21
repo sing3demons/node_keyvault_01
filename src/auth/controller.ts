@@ -9,6 +9,8 @@ import {
   registerBody,
   parseTokenRequest,
   revokeBody,
+  setRolesBody,
+  usernameParam,
   updateAccountBody
 } from "./schemas.js";
 import { parse, parseJsonBody } from "../shared/http.js";
@@ -93,6 +95,20 @@ export class AuthController {
   async register(c: Context) {
     const body = await parseJsonBody(c, registerBody);
     return c.json(await this.auth.register(body), 201);
+  }
+
+  // ================================================================ admin (requireRole("admin"))
+
+  /** GET /admin/users */
+  async listUsers(c: Context<AuthEnv>) {
+    return c.json({ users: await this.auth.listUsers() });
+  }
+
+  /** PUT /admin/users/:username/roles  body: { roles } */
+  async setUserRoles(c: Context<AuthEnv>) {
+    const { username } = parse(usernameParam, c.req.param());
+    const { roles } = await parseJsonBody(c, setRolesBody);
+    return c.json(await this.auth.setUserRoles(username, roles));
   }
 
   /** GET /auth/me (Bearer) */

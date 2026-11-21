@@ -10,6 +10,8 @@ export interface AuthenticatedUser {
   username: string;
   scope: string;
   clientId: string;
+  /** Current roles, read from the user record on every request (so revoking takes effect at once). */
+  roles: string[];
 }
 
 /** Resolves an access token to its user, or null when it is unknown or expired. */
@@ -36,6 +38,16 @@ export function requireAuth(authenticator: TokenAuthenticator, scope?: string): 
       throw new HttpError(403, `Token lacks the "${scope}" scope`, "insufficient_scope");
     }
     c.set("user", user);
+    await next();
+  };
+}
+
+/** Use after requireAuth: only callers holding `role` get through (403 otherwise). */
+export function requireRole(role: string): MiddlewareHandler<AuthEnv> {
+  return async (c, next) => {
+    if (!c.get("user").roles.includes(role)) {
+      throw new HttpError(403, `Requires the "${role}" role`, "access_denied");
+    }
     await next();
   };
 }

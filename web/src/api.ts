@@ -1,10 +1,39 @@
 import { authFetch } from "./auth";
 
+export type Permission = "read" | "write" | "delete";
+export const PERMISSIONS: Permission[] = ["read", "write", "delete"];
+
+/** What the signed-in user may do with a secret (computed by the API). */
+export interface SecretAccess {
+  owner: boolean;
+  read: boolean;
+  write: boolean;
+  delete: boolean;
+  share: boolean;
+  /** Owner, or an admin (who cannot read the value). */
+  transfer: boolean;
+}
+
+export interface AdminUser {
+  id: string;
+  username: string;
+  email?: string;
+  roles: string[];
+  createdAt: string;
+}
+
 export interface SecretSummary {
   name: string;
   enabled: boolean;
   createdOn?: string;
   updatedOn?: string;
+  owner: { id: string; username: string } | null;
+  access: SecretAccess;
+}
+
+export interface Grant {
+  user: { id: string; username: string };
+  permissions: Permission[];
 }
 
 export interface LocalizedProfile {
@@ -26,6 +55,7 @@ export interface Account {
   profiles: LocalizedProfile[];
   preferredLang?: string;
   displayProfile?: LocalizedProfile;
+  roles: string[];
   createdAt: string;
 }
 
@@ -56,6 +86,24 @@ export const api = {
     request<Account>("/auth/me", { method: "PATCH", body: JSON.stringify(update) }),
   list: async () => (await request<{ secrets: SecretSummary[] }>("/secrets")).secrets,
   get: async (name: string) => (await request<{ value: string }>(path(name))).value,
-  set: (name: string, value: string) => request<null>(path(name), { method: "PUT", body: JSON.stringify({ value }) }),
-  remove: (name: string) => request<null>(path(name), { method: "DELETE" })
+  set: (name: string, value: string) => request<unknown>(path(name), { method: "PUT", body: JSON.stringify({ value }) }),
+  remove: (name: string) => request<null>(path(name), { method: "DELETE" }),
+  grants: async (name: string) => (await request<{ grants: Grant[] }>(`${path(name)}/grants`)).grants,
+  setGrant: async (name: string, username: string, permissions: Permission[]) =>
+    (
+      await request<{ grants: Grant[] }>(`${path(name)}/grants/${encodeURIComponent(username)}`, {
+        method: "PUT",
+        body: JSON.stringify({ permissions })
+      })
+    ).grants,
+  transferOwnership: (name: string, username: string) =>
+    request<{ owner: { id: string; username: string } }>(`${path(name)}/owner`, {
+      method: "PUT",
+      body: JSON.stringify({ username })
+    }),
+  adminUsers: async () => (await request<{ users: AdminUser[] }>("/admin/users")).users,
+  setRoles: (username: string, roles: string[]) =>
+    request<AdminUser>(`/admin/users/${encodeURIComponent(username)}/roles`, { method: "PUT", body: JSON.stringify({ roles }) }),
+  removeGrant: async (name: string, username: string) =>
+    (await request<{ grants: Grant[] }>(`${path(name)}/grants/${encodeURIComponent(username)}`, { method: "DELETE" })).grants
 };

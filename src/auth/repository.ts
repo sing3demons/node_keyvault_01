@@ -5,12 +5,14 @@
 import type { HashAlgorithm } from "../shared/hashing.js";
 import type {
   AccessToken,
+  AccountUpdate,
   AuthCode,
   AuthRequest,
   Credential,
-  AccountUpdate,
   RefreshToken,
+  Role,
   User,
+  UserSummary,
   WebAuthnChallenge,
   WebAuthnCredential
 } from "./model.js";
@@ -32,6 +34,9 @@ export interface UserRepository {
   /** Applies only the given fields; `profiles` replaces the whole list. @throws DuplicateKeyError (field "email") */
   updateAccount(userId: string, update: AccountUpdate): Promise<void>;
   findById(id: string): Promise<User | null>;
+  /** All users, oldest first (admin listing). */
+  list(): Promise<UserSummary[]>;
+  setRoles(userId: string, roles: Role[]): Promise<void>;
   findByUsername(username: string): Promise<User | null>;
   /** Finds the owner of a passkey. */
   findByWebAuthnCredId(credId: string): Promise<{ user: User; credential: WebAuthnCredential } | null>;

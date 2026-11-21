@@ -11,7 +11,9 @@ import type {
   LocalizedProfile,
   AccountUpdate,
   RefreshToken,
+  Role,
   User,
+  UserSummary,
   WebAuthnChallenge,
   WebAuthnCredential
 } from "../../model.js";
@@ -97,6 +99,7 @@ export class DrizzleAuthRepository implements AuthRepository {
             username: user.username,
             email: user.email,
             preferredLang: user.preferredLang,
+            roles: user.roles,
             createdAt: user.createdAt
           });
           if (user.profiles.length > 0) {
@@ -123,6 +126,17 @@ export class DrizzleAuthRepository implements AuthRepository {
     findById: async (id: string) => {
       if (!this.isUuid(id)) return null; // uuid column would reject other formats
       return this.loadUser((await this.db.select().from(users).where(eq(users.id, id)))[0]);
+    },
+    list: async (): Promise<UserSummary[]> =>
+      (
+        await this.db
+          .select({ id: users.id, username: users.username, email: users.email, roles: users.roles, createdAt: users.createdAt })
+          .from(users)
+          .orderBy(asc(users.createdAt))
+      ).map((r) => ({ id: r.id, username: r.username, ...(r.email !== null ? { email: r.email } : {}), roles: r.roles, createdAt: r.createdAt })),
+    setRoles: async (userId: string, roles: Role[]) => {
+      if (!this.isUuid(userId)) return;
+      await this.db.update(users).set({ roles }).where(eq(users.id, userId));
     },
     findByUsername: async (username: string) =>
       this.loadUser((await this.db.select().from(users).where(eq(users.username, username)))[0]),
@@ -187,6 +201,7 @@ export class DrizzleAuthRepository implements AuthRepository {
       ...(row.email !== null ? { email: row.email } : {}),
       profiles: profiles.map(({ lang, firstName, lastName }) => ({ lang, firstName, lastName })),
       ...(row.preferredLang !== null ? { preferredLang: row.preferredLang } : {}),
+      roles: row.roles,
       createdAt: row.createdAt,
       credentials: creds.map(fromRow)
     };
