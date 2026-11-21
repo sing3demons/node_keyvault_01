@@ -87,6 +87,7 @@ export const authRequests = pgTable(
     state: text("state"),
     scope: text("scope").notNull(),
     codeChallenge: text("code_challenge").notNull(),
+    nonce: text("nonce"),
     expiresAt: ts("expires_at").notNull()
   },
   (t) => [index("auth_requests_expires_at_idx").on(t.expiresAt)]
@@ -104,6 +105,8 @@ export const authCodes = pgTable(
     scope: text("scope").notNull(),
     codeChallenge: text("code_challenge").notNull(),
     familyId: text("family_id").notNull(),
+    nonce: text("nonce"),
+    authTime: ts("auth_time"),
     used: boolean("used").notNull().default(false),
     expiresAt: ts("expires_at").notNull()
   },
@@ -136,6 +139,7 @@ export const refreshTokens = pgTable(
     scope: text("scope").notNull(),
     familyId: text("family_id").notNull(),
     revoked: boolean("revoked").notNull().default(false),
+    authTime: ts("auth_time"),
     expiresAt: ts("expires_at").notNull()
   },
   (t) => [index("refresh_tokens_family_id_idx").on(t.familyId), index("refresh_tokens_expires_at_idx").on(t.expiresAt)]

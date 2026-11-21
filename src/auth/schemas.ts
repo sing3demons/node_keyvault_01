@@ -136,7 +136,8 @@ export const authorizeQuery = z.object({
   state: z.string().optional(),
   scope: z.string().optional(),
   code_challenge: z.string().optional(),
-  code_challenge_method: z.string().optional()
+  code_challenge_method: z.string().optional(),
+  nonce: z.string().max(512).optional()
 });
 
 /** Token request (RFC 6749 §4.1.3, §6), discriminated by grant_type. */

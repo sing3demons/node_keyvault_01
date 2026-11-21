@@ -34,6 +34,12 @@ class Config {
     refreshTokenTtlSec: number;
   };
 
+  oidc: {
+    issuer: string;
+    privateKeyPem?: string;
+    idTokenTtlSec: number;
+  };
+
   constructor() {
     this.port = Number(process.env.PORT ?? "3001");
     this.azureVaultUrl = process.env.AZURE_KEYVAULT_URL;
@@ -65,6 +71,13 @@ class Config {
       ]),
       accessTokenTtlSec: Number(process.env.ACCESS_TOKEN_TTL ?? 900),
       refreshTokenTtlSec: Number(process.env.REFRESH_TOKEN_TTL ?? 60 * 60 * 24 * 30)
+    };
+
+    this.oidc = {
+      issuer: process.env.OIDC_ISSUER ?? `http://localhost:${this.port}`,
+      // PEM in an env var usually arrives with literal "\n"
+      privateKeyPem: process.env.OIDC_PRIVATE_KEY?.replace(/\\n/g, "\n"),
+      idTokenTtlSec: Number(process.env.ID_TOKEN_TTL ?? 900)
     };
   }
 }

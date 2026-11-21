@@ -8,6 +8,7 @@ import { KeyVaultController } from "./keyvault/controller.js";
 import { AzureKeyVaultSecretStore } from "./keyvault/store.js";
 import { createAuthRepository } from "./auth/repositories/index.js";
 import { AuthService } from "./auth/service.js";
+import { IdTokenIssuer } from "./auth/oidc.js";
 import { Argon2idHasher, SecretHasher } from "./shared/hashing.js";
 import { WebAuthnService } from "./auth/webauthn.js";
 import { AuthController } from "./auth/controller.js";
@@ -29,9 +30,10 @@ async function main() {
   await authRepo.init();
   // RDBs have no TTL index: sweep expired codes/tokens/challenges periodically
   setInterval(() => authRepo.purgeExpired(new Date()).catch((e) => console.error("purgeExpired failed", e)), 10 * 60_000).unref();
-  const authService = new AuthService(authRepo, new SecretHasher(new Argon2idHasher()), config.oauth);
+  const idTokens = await IdTokenIssuer.create(config.oidc);
+  const authService = new AuthService(authRepo, new SecretHasher(new Argon2idHasher()), config.oauth, idTokens);
   const webAuthnService = new WebAuthnService(authRepo, config.webauthn);
-  const auth = new AuthController(authService, webAuthnService);
+  const auth = new AuthController(authService, webAuthnService, idTokens);
   const bearer = requireAuth(authService);
 
   const app = new Hono<AuthEnv>();
@@ -41,7 +43,11 @@ async function main() {
 
   app.get("/health", (c) => c.json({ status: "ok" }));
 
-  // --- OAuth2 Authorization Server (Authorization Code + PKCE, opaque tokens)
+  // --- OpenID Connect discovery
+  app.get("/.well-known/openid-configuration", (c) => auth.openidConfiguration(c));
+  app.get("/.well-known/jwks.json", (c) => auth.jwks(c));
+
+  // --- OAuth2 Authorization Server (Authorization Code + PKCE, opaque tokens; ID Token with "openid")
   app.get("/oauth/authorize", (c) => auth.authorize(c));
   app.post("/oauth/token", (c) => auth.token(c));
   app.post("/oauth/revoke", (c) => auth.revoke(c));

@@ -63,6 +63,14 @@ pnpm dev                        # API :3000 + UI (Vite) http://localhost:5173
 | `mongo` (default) | MongoDB native driver (`MONGO_URL`, `MONGO_DB`) | หมดอายุด้วย TTL index |
 | `postgres` | PostgreSQL ผ่าน Drizzle ORM (`DATABASE_URL`) | migration ใน `./drizzle` รันอัตโนมัติตอน start, ลบแถวหมดอายุทุก 10 นาที |
 
+**OpenID Connect (ID Token)**
+
+- ขอ scope `openid` (เพิ่ม `profile`, `email` ได้) แล้ว `/oauth/token` จะคืน `id_token` (JWT, RS256) มาด้วย ทั้งตอนแลก code และตอน refresh
+- claim: `iss`, `sub`, `aud`, `exp`, `iat`, `auth_time`, `nonce` (ส่งมาตอน `/oauth/authorize`), `at_hash` และตาม scope — `profile`: `name`, `given_name`, `family_name`, `locale`, `preferred_username`, ชื่อแยกภาษา `given_name#th`; `email`: `email`, `email_verified`
+- client ตรวจลายเซ็นด้วย `GET /.well-known/jwks.json` (หาได้จาก `GET /.well-known/openid-configuration`)
+- ตั้ง `OIDC_ISSUER` และ `OIDC_PRIVATE_KEY` ใน production (ดู `.env.example`) — ถ้าไม่ตั้ง key จะสร้างใหม่ทุกครั้งที่ start
+- `/oauth/userinfo` คืน claim ตาม scope ของ access token เหมือนกัน
+
 **User model**
 
 - `email` (unique, lowercase) และ `profiles: [{ lang, firstName, lastName }]` — ชื่อแยกตามภาษา (BCP 47 เช่น `th`, `en`, `en-US`) ภาษาละ 1 ชุด
@@ -103,6 +111,7 @@ Flow: UI → `GET /oauth/authorize` → redirect ไป `/login?request_id=…` 
 ## Endpoint
 
 - `GET /health`
+- `GET /.well-known/openid-configuration` · `GET /.well-known/jwks.json`
 - `GET /oauth/authorize` · `POST /oauth/token` · `POST /oauth/revoke` · `GET /oauth/userinfo` (Bearer)
 - `POST /auth/register` (`username`, `email`, `password`, `profiles`, `preferredLang?`) · `POST /auth/login/password`
 - `GET /auth/me` · `PATCH /auth/me` (Bearer)

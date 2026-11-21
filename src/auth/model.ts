@@ -93,6 +93,8 @@ export interface AuthRequest {
   state?: string;
   scope: string;
   codeChallenge: string;
+  /** OIDC: echoed into the ID Token to bind it to this request. */
+  nonce?: string;
   expiresAt: Date;
 }
 
@@ -104,6 +106,9 @@ export interface AuthCode {
   scope: string;
   codeChallenge: string;
   familyId: string; // tokens issued from this code share it (replay => revoke)
+  nonce?: string;
+  /** When the user authenticated (ID Token auth_time). Optional only for rows written before OIDC. */
+  authTime?: Date;
   used: boolean;
   expiresAt: Date;
 }
@@ -119,4 +124,6 @@ export interface AccessToken {
 
 export interface RefreshToken extends AccessToken {
   revoked: boolean;
+  /** Original authentication time, carried into ID Tokens issued on refresh. */
+  authTime?: Date;
 }

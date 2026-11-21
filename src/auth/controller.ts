@@ -13,14 +13,29 @@ import {
 } from "./schemas.js";
 import { parse, parseJsonBody } from "../shared/http.js";
 import type { AuthEnv } from "../shared/middleware.js";
-import type { AuthService } from "./service.js";
+import type { IdTokenIssuer } from "./oidc.js";
+import { API_SCOPES, type AuthService } from "./service.js";
 import type { WebAuthnService } from "./webauthn.js";
 
 export class AuthController {
   constructor(
     private readonly auth: AuthService,
-    private readonly webauthn: WebAuthnService
+    private readonly webauthn: WebAuthnService,
+    private readonly idTokens: IdTokenIssuer
   ) {}
+
+  // ================================================================ OpenID Connect discovery
+
+  /** GET /.well-known/openid-configuration */
+  openidConfiguration(c: Context) {
+    return c.json(this.idTokens.discovery(API_SCOPES));
+  }
+
+  /** GET /.well-known/jwks.json — public keys for verifying ID Tokens */
+  jwks(c: Context) {
+    c.header("Cache-Control", "public, max-age=300");
+    return c.json(this.idTokens.jwks());
+  }
 
   // ================================================================ OAuth2 endpoints
 
@@ -34,7 +49,8 @@ export class AuthController {
       state: q.state,
       scope: q.scope,
       codeChallenge: q.code_challenge,
-      codeChallengeMethod: q.code_challenge_method
+      codeChallengeMethod: q.code_challenge_method,
+      nonce: q.nonce
     });
     if ("redirect" in result) return c.redirect(result.redirect, 302);
     return c.redirect(`/login?request_id=${encodeURIComponent(result.requestId)}`, 302);

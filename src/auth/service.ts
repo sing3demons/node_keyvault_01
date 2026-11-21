@@ -5,6 +5,7 @@ import type { SecretHasher } from "../shared/hashing.js";
 import type { AuthenticatedUser, TokenAuthenticator } from "../shared/middleware.js";
 import { expiresIn } from "../shared/util.js";
 import { OAuthError, verifyPkceS256 } from "./oauth.js";
+import { OIDC_SCOPES, type IdTokenIssuer } from "./oidc.js";
 import { displayProfile, isPassword, type LocalizedProfile, type User } from "./model.js";
 import { DuplicateKeyError, type AuthRepository } from "./repository.js";
 import type { RegisterBody, UpdateAccountBody } from "./schemas.js";
@@ -24,6 +25,7 @@ export interface AuthorizeParams {
   scope?: string;
   codeChallenge?: string;
   codeChallengeMethod?: string;
+  nonce?: string;
 }
 
 export interface TokenResponse {
@@ -32,9 +34,13 @@ export interface TokenResponse {
   expires_in: number;
   refresh_token: string;
   scope: string;
+  /** Present when the grant includes the "openid" scope. */
+  id_token?: string;
 }
 
-const SUPPORTED_SCOPES = new Set(["secrets"]);
+/** Scopes protecting this API (as opposed to the OIDC identity scopes). */
+export const API_SCOPES = ["secrets"] as const;
+const SUPPORTED_SCOPES = new Set<string>([...OIDC_SCOPES, ...API_SCOPES]);
 const DEFAULT_SCOPE = "secrets";
 const AUTH_REQUEST_TTL_MS = 10 * 60_000;
 const AUTH_CODE_TTL_MS = 60_000;
@@ -52,7 +58,7 @@ export interface Account {
 }
 
 /** OpenID Connect UserInfo claims (OIDC Core §5.1), with per-language profiles as "claim#lang" (§5.2). */
-export type UserInfoClaims = Record<string, string>;
+export type UserInfoClaims = Record<string, string | boolean>;
 
 const toAccount = (u: User): Account => ({
   id: u.id,
@@ -68,7 +74,8 @@ export class AuthService implements TokenAuthenticator {
   constructor(
     private readonly repo: AuthRepository,
     private readonly hasher: SecretHasher,
-    private readonly oauth: OAuthSettings
+    private readonly oauth: OAuthSettings,
+    private readonly idTokens: IdTokenIssuer
   ) {}
 
   // ---------------------------------------------------------------- users
@@ -119,22 +126,34 @@ export class AuthService implements TokenAuthenticator {
     return this.getAccount(userId);
   }
 
-  /** Claims for /oauth/userinfo. */
+  /** Claims for /oauth/userinfo: `sub` plus whatever the token's scopes allow. */
   async userInfo(userId: string, scope: string): Promise<UserInfoClaims> {
     const user = await this.requireUser(userId);
-    const shown = displayProfile(user);
-    const claims: UserInfoClaims = { sub: user.id, preferred_username: user.username, username: user.username, scope };
-    if (user.email) claims.email = user.email;
-    if (shown) {
-      claims.name = `${shown.firstName} ${shown.lastName}`;
-      claims.given_name = shown.firstName;
-      claims.family_name = shown.lastName;
-      claims.locale = shown.lang;
+    return { sub: user.id, ...this.scopedClaims(user, scope) };
+  }
+
+  /** OIDC Core §5.4: "profile" -> name claims (per language as claim#lang, §5.2), "email" -> email. */
+  private scopedClaims(user: User, scope: string): UserInfoClaims {
+    const granted = new Set(scope.split(" "));
+    const claims: UserInfoClaims = {};
+    if (granted.has("profile")) {
+      claims.preferred_username = user.username;
+      const shown = displayProfile(user);
+      if (shown) {
+        claims.name = `${shown.firstName} ${shown.lastName}`;
+        claims.given_name = shown.firstName;
+        claims.family_name = shown.lastName;
+        claims.locale = shown.lang;
+      }
+      for (const p of user.profiles) {
+        claims[`name#${p.lang}`] = `${p.firstName} ${p.lastName}`;
+        claims[`given_name#${p.lang}`] = p.firstName;
+        claims[`family_name#${p.lang}`] = p.lastName;
+      }
     }
-    for (const n of user.profiles) {
-      claims[`name#${n.lang}`] = `${n.firstName} ${n.lastName}`;
-      claims[`given_name#${n.lang}`] = n.firstName;
-      claims[`family_name#${n.lang}`] = n.lastName;
+    if (granted.has("email") && user.email) {
+      claims.email = user.email;
+      claims.email_verified = false; // addresses are not verified yet
     }
     return claims;
   }
@@ -188,6 +207,7 @@ export class AuthService implements TokenAuthenticator {
       state: p.state,
       scope,
       codeChallenge: p.codeChallenge,
+      ...(p.nonce !== undefined ? { nonce: p.nonce } : {}),
       expiresAt: expiresIn(AUTH_REQUEST_TTL_MS)
     });
     return { requestId };
@@ -216,6 +236,8 @@ export class AuthService implements TokenAuthenticator {
       scope: req.scope,
       codeChallenge: req.codeChallenge,
       familyId: randomToken(16),
+      ...(req.nonce !== undefined ? { nonce: req.nonce } : {}),
+      authTime: new Date(),
       used: false,
       expiresAt: expiresIn(AUTH_CODE_TTL_MS)
     });
@@ -252,7 +274,10 @@ export class AuthService implements TokenAuthenticator {
     if (!verifyPkceS256(p.codeVerifier, codeDoc.codeChallenge)) {
       throw new OAuthError("invalid_grant", "PKCE verification failed");
     }
-    return this.issueTokens(codeDoc.userId, codeDoc.clientId, codeDoc.scope, codeDoc.familyId);
+    return this.issueTokens(codeDoc.userId, codeDoc.clientId, codeDoc.scope, codeDoc.familyId, {
+      authTime: codeDoc.authTime ?? new Date(),
+      nonce: codeDoc.nonce
+    });
   }
 
   async refresh(p: { refreshToken: string; clientId: string; scope?: string }): Promise<TokenResponse> {
@@ -282,7 +307,10 @@ export class AuthService implements TokenAuthenticator {
       }
       scope = requested;
     }
-    return this.issueTokens(current.userId, current.clientId, scope, current.familyId);
+    // OIDC Core §12.2: refreshed ID Tokens keep auth_time; nonce is not repeated
+    return this.issueTokens(current.userId, current.clientId, scope, current.familyId, {
+      authTime: current.authTime ?? new Date()
+    });
   }
 
   /** RFC 7009 — revoking either token type ends the whole session (family). */
@@ -321,7 +349,13 @@ export class AuthService implements TokenAuthenticator {
     return new HttpError(409, error.message);
   }
 
-  private async issueTokens(userId: string, clientId: string, scope: string, familyId: string): Promise<TokenResponse> {
+  private async issueTokens(
+    userId: string,
+    clientId: string,
+    scope: string,
+    familyId: string,
+    session: { authTime: Date; nonce?: string }
+  ): Promise<TokenResponse> {
     const accessToken = randomToken();
     const refreshToken = randomToken();
     const { accessTokenTtlSec, refreshTokenTtlSec } = this.oauth;
@@ -334,16 +368,29 @@ export class AuthService implements TokenAuthenticator {
         scope,
         familyId,
         revoked: false,
+        authTime: session.authTime,
         expiresAt: expiresIn(refreshTokenTtlSec * 1000)
       }
     );
-    return {
+    const response: TokenResponse = {
       access_token: accessToken,
       token_type: "Bearer",
       expires_in: accessTokenTtlSec,
       refresh_token: refreshToken,
       scope
     };
+    if (scope.split(" ").includes("openid")) {
+      const user = await this.requireUser(userId);
+      response.id_token = await this.idTokens.sign({
+        subject: user.id,
+        audience: clientId,
+        authTime: session.authTime,
+        nonce: session.nonce,
+        accessToken,
+        claims: this.scopedClaims(user, scope)
+      });
+    }
+    return response;
   }
 
   private revokeFamily(familyId: string): Promise<void> {

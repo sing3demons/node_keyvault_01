@@ -1,12 +1,14 @@
 // OAuth2 Authorization Code + PKCE client for the SPA, plus WebAuthn (passkey) helpers.
 
 export const CLIENT_ID = "keyvault-web";
-const SCOPE = "secrets";
+/** "openid profile email" => an ID Token with name/email claims; "secrets" => access to the API. */
+const SCOPE = "openid profile email secrets";
 const redirectUri = () => `${location.origin}/callback`;
 
 const K = {
   verifier: "oauth.pkce_verifier",
   state: "oauth.state",
+  nonce: "oauth.nonce",
   returnTo: "oauth.return_to",
   tokens: "oauth.tokens"
 };
@@ -85,6 +87,8 @@ export async function startLogin(): Promise<never> {
   const state = randomString(16);
   store.set(K.verifier, verifier);
   store.set(K.state, state);
+  const nonce = randomString(16);
+  store.set(K.nonce, nonce);
   if (location.pathname !== "/callback" && location.pathname !== "/login") {
     store.set(K.returnTo, location.pathname + location.search);
   }
@@ -95,7 +99,8 @@ export async function startLogin(): Promise<never> {
     scope: SCOPE,
     state,
     code_challenge: challenge,
-    code_challenge_method: "S256"
+    code_challenge_method: "S256",
+    nonce
   });
   location.assign(`/oauth/authorize?${params}`);
   return new Promise<never>(() => {});
@@ -109,7 +114,22 @@ async function tokenRequest(body: Record<string, string>) {
   });
   const json = (await res.json().catch(() => ({}))) as Record<string, string>;
   if (!res.ok) throw new Error(json.error_description ?? json.error ?? `Token request failed (${res.status})`);
-  return json as unknown as { access_token: string; refresh_token: string; expires_in: number };
+  return json as unknown as { access_token: string; refresh_token: string; expires_in: number; id_token?: string };
+}
+
+/**
+ * Checks the ID Token belongs to this sign-in (OIDC Core §3.1.3.7): audience is this client and the nonce
+ * is the one we sent. The signature is not re-verified here: the token came straight from the token
+ * endpoint over TLS, which the spec accepts for this flow (verify with /.well-known/jwks.json elsewhere).
+ */
+function checkIdToken(idToken: string | undefined, expectedNonce: string | null): void {
+  if (!idToken) throw new Error("Sign-in response is missing the ID Token");
+  const [, payload] = idToken.split(".");
+  const claims = JSON.parse(new TextDecoder().decode(b64urlToBuf(payload ?? ""))) as { aud?: string | string[]; nonce?: string };
+  const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
+  if (!audiences.includes(CLIENT_ID) || !expectedNonce || claims.nonce !== expectedNonce) {
+    throw new Error("Invalid sign-in response (ID Token mismatch). Please try again.");
+  }
 }
 
 let callbackOnce: Promise<string> | null = null;
@@ -125,9 +145,13 @@ export function handleCallback(): Promise<string> {
     if (!code || !verifier || !state || state !== store.get(K.state)) {
       throw new Error("Invalid sign-in response (state mismatch). Please try again.");
     }
+    const nonce = store.get(K.nonce);
     store.del(K.verifier);
     store.del(K.state);
-    saveTokens(await tokenRequest({ grant_type: "authorization_code", code, redirect_uri: redirectUri(), code_verifier: verifier }));
+    store.del(K.nonce);
+    const tokens = await tokenRequest({ grant_type: "authorization_code", code, redirect_uri: redirectUri(), code_verifier: verifier });
+    checkIdToken(tokens.id_token, nonce);
+    saveTokens(tokens);
     const back = store.get(K.returnTo) ?? "/";
     store.del(K.returnTo);
     return back;
