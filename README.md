@@ -1,6 +1,6 @@
 # node_keyvault
 
-TypeScript API + UI สำหรับจัดการ secret (CRUD) โดยรองรับ 2 โหมด:
+API ([Hono](https://hono.dev)) + UI (React + Vite) สำหรับจัดการ secret (CRUD) โดยรองรับ 2 โหมด:
 
 - `local` (ค่าเริ่มต้น): ใช้ Vault container ใน Docker สำหรับ local development
 - `azure`: ใช้ Azure Key Vault จริงผ่าน `@azure/identity` + `@azure/keyvault-secrets`
@@ -38,10 +38,10 @@ curl -X DELETE http://localhost:3000/secrets/demo
 ## Run แบบ local (ไม่ใช้ docker app)
 
 ```bash
-npm install
+pnpm install
 cp .env.example .env
 docker compose up -d keyvault   # รันแค่ emulator
-npm run dev
+pnpm dev                        # API :3000 + UI (Vite) http://localhost:5173
 ```
 
 ## สลับไป Azure Key Vault จริง
@@ -54,6 +54,7 @@ npm run dev
 ## Endpoint
 
 - `GET /health`
+- `GET /secrets` (list ชื่อ + วันที่ ไม่มี value)
 - `GET /secrets/:name`
 - `PUT /secrets/:name` body: `{ "value": "..." }`
 - `DELETE /secrets/:name`

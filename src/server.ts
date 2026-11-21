@@ -1,80 +1,57 @@
-import express from "express";
-import path from "node:path";
+import { serve } from "@hono/node-server";
+import { serveStatic } from "@hono/node-server/serve-static";
+import { Hono } from "hono";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { config } from "./config.js";
 import { createSecretStore } from "./secret-store.js";
 
-const app = express();
 const secretStore = createSecretStore();
-const publicDirPath = path.resolve(process.cwd(), "public");
 
 function getErrorMessage(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return "Unknown error";
+  return error instanceof Error ? error.message : "Unknown error";
 }
 
-function getErrorStatusCode(error: unknown): number {
+function getErrorStatusCode(error: unknown): ContentfulStatusCode {
   if (typeof error === "object" && error !== null && "statusCode" in error) {
     const statusCode = (error as { statusCode?: unknown }).statusCode;
-    if (typeof statusCode === "number") {
-      return statusCode;
+    if (typeof statusCode === "number" && statusCode >= 400 && statusCode < 600) {
+      return statusCode as ContentfulStatusCode;
     }
   }
   return 500;
 }
 
-app.use(express.json());
-app.use(express.static(publicDirPath));
+const app = new Hono();
 
-app.get("/health", (_req, res) => {
-  res.json({ status: "ok", provider: config.secretProvider });
+app.onError((error, c) => c.json({ message: getErrorMessage(error) }, getErrorStatusCode(error)));
+
+app.get("/health", (c) => c.json({ status: "ok", provider: config.secretProvider }));
+
+app.get("/secrets", async (c) => c.json({ secrets: await secretStore.listSecrets() }));
+
+app.get("/secrets/:name", async (c) => {
+  const name = c.req.param("name");
+  return c.json({ name, value: await secretStore.getSecret(name) });
 });
 
-app.get("/secrets", async (_req, res) => {
-  try {
-    res.json({ secrets: await secretStore.listSecrets() });
-  } catch (error) {
-    res.status(getErrorStatusCode(error)).json({ message: getErrorMessage(error) });
-  }
-});
-
-app.get("/secrets/:name", async (req, res) => {
-  try {
-    const value = await secretStore.getSecret(req.params.name);
-    res.json({ name: req.params.name, value });
-  } catch (error) {
-    const statusCode = getErrorStatusCode(error);
-    res.status(statusCode).json({ message: getErrorMessage(error) });
-  }
-});
-
-app.put("/secrets/:name", async (req, res) => {
-  const value = req.body?.value;
+app.put("/secrets/:name", async (c) => {
+  const body = await c.req.json().catch(() => null);
+  const value = (body as { value?: unknown } | null)?.value;
   if (typeof value !== "string" || value.length === 0) {
-    res.status(400).json({ message: "Body must include a non-empty string field: value" });
-    return;
+    return c.json({ message: "Body must include a non-empty string field: value" }, 400);
   }
-
-  try {
-    await secretStore.setSecret(req.params.name, value);
-    res.status(204).send();
-  } catch (error) {
-    const statusCode = getErrorStatusCode(error);
-    res.status(statusCode).json({ message: getErrorMessage(error) });
-  }
+  await secretStore.setSecret(c.req.param("name"), value);
+  return c.body(null, 204);
 });
 
-app.delete("/secrets/:name", async (req, res) => {
-  try {
-    await secretStore.deleteSecret(req.params.name);
-    res.status(204).send();
-  } catch (error) {
-    const statusCode = getErrorStatusCode(error);
-    res.status(statusCode).json({ message: getErrorMessage(error) });
-  }
+app.delete("/secrets/:name", async (c) => {
+  await secretStore.deleteSecret(c.req.param("name"));
+  return c.body(null, 204);
 });
 
-app.listen(config.port, () => {
-  console.log(`Server is running on port ${config.port} with provider=${config.secretProvider}`);
+// React UI (built by `vite build` into dist/public)
+app.use("/*", serveStatic({ root: "./dist/public" }));
+
+serve({ fetch: app.fetch, port: config.port }, (info) => {
+  console.log(`Server is running on port ${info.port} with provider=${config.secretProvider}`);
 });
