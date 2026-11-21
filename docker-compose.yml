@@ -13,6 +13,24 @@ services:
       retries: 20
 
   # Azure Key Vault emulator (https://github.com/nagyesta/lowkey-vault)
+  # Optional relational backend for auth (AUTH_DB=postgres)
+  postgres:
+    image: postgres:17-alpine
+    container_name: keyvault-postgres
+    environment:
+      POSTGRES_USER: keyvault
+      POSTGRES_PASSWORD: keyvault
+      POSTGRES_DB: keyvault
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U keyvault"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   keyvault:
     image: nagyesta/lowkey-vault:7.3.145
     container_name: keyvault-emulator
@@ -46,7 +64,10 @@ services:
       IDENTITY_HEADER: header
       # emulator uses a self-signed certificate (local dev only!)
       NODE_TLS_REJECT_UNAUTHORIZED: "0"
+      # auth storage: mongo | postgres
+      AUTH_DB: ${AUTH_DB:-mongo}
       MONGO_URL: mongodb://mongo:27017
+      DATABASE_URL: postgres://keyvault:keyvault@postgres:5432/keyvault
     ports:
       - "${PORT:-3000}:${PORT:-3000}"
     depends_on:
@@ -57,3 +78,4 @@ services:
 
 volumes:
   mongo-data:
+  postgres-data:

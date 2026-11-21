@@ -14,8 +14,12 @@ class Config {
   port: number;
   azureVaultUrl?: string;
 
+  /** Auth storage backend: "mongo" (native driver) | "postgres" (Drizzle ORM) */
+  authDb: "mongo" | "postgres";
   mongoUrl: string;
   mongoDb: string;
+  databaseUrl?: string;
+  migrationsFolder: string;
 
   webauthn: {
     rpId: string;
@@ -34,6 +38,13 @@ class Config {
     this.port = Number(process.env.PORT ?? "3001");
     this.azureVaultUrl = process.env.AZURE_KEYVAULT_URL;
 
+    const authDb = (process.env.AUTH_DB ?? "mongo").toLowerCase();
+    if (authDb !== "mongo" && authDb !== "postgres") {
+      throw new Error(`AUTH_DB must be "mongo" or "postgres", got "${authDb}"`);
+    }
+    this.authDb = authDb;
+    this.databaseUrl = process.env.DATABASE_URL;
+    this.migrationsFolder = process.env.DRIZZLE_MIGRATIONS ?? "./drizzle";
     this.mongoUrl = process.env.MONGO_URL ?? "mongodb://localhost:27017";
     this.mongoDb = process.env.MONGO_DB ?? "keyvault";
 

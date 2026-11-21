@@ -6,8 +6,7 @@ import { config } from "./config.js";
 import { KeyVaultService } from "./keyvault/service.js";
 import { KeyVaultController } from "./keyvault/controller.js";
 import { AzureKeyVaultSecretStore } from "./keyvault/store.js";
-import { connectMongo } from "./db/mongo.js";
-import { AuthStore } from "./auth/store.js";
+import { createAuthRepository } from "./auth/repositories/index.js";
 import { AuthService } from "./auth/service.js";
 import { WebAuthnService } from "./auth/webauthn.js";
 import { AuthController } from "./auth/controller.js";
@@ -19,11 +18,18 @@ async function main() {
   const keyVaultSecret = new KeyVaultService(keyVaultSecretStore);
   const keyVaultHandler = new KeyVaultController(keyVaultSecret);
 
-  const { db } = await connectMongo(config.mongoUrl, config.mongoDb);
-  const authStore = new AuthStore(db);
-  await authStore.ensureIndexes();
-  const authService = new AuthService(authStore, config.oauth);
-  const webAuthnService = new WebAuthnService(authStore, config.webauthn);
+  const authRepo = await createAuthRepository({
+    driver: config.authDb,
+    mongoUrl: config.mongoUrl,
+    mongoDb: config.mongoDb,
+    databaseUrl: config.databaseUrl,
+    migrationsFolder: config.migrationsFolder
+  });
+  await authRepo.init();
+  // RDBs have no TTL index: sweep expired codes/tokens/challenges periodically
+  setInterval(() => authRepo.purgeExpired(new Date()).catch((e) => console.error("purgeExpired failed", e)), 10 * 60_000).unref();
+  const authService = new AuthService(authRepo, config.oauth);
+  const webAuthnService = new WebAuthnService(authRepo, config.webauthn);
   const auth = new AuthController(authService, webAuthnService);
   const bearer = requireAuth(authService);
 
@@ -83,7 +89,7 @@ async function main() {
   app.get("*", serveStatic({ path: "./dist/public/index.html" }));
 
   serve({ fetch: app.fetch, port: config.port }, (info) => {
-    console.log(`Server is running on port ${info.port}`);
+    console.log(`Server is running on port ${info.port} (auth db: ${config.authDb})`);
   });
 }
 

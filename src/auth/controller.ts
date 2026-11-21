@@ -92,7 +92,7 @@ export class AuthController {
     const requestId = str(body.request_id);
     await this.auth.assertAuthRequest(requestId);
     const user = await this.auth.verifyPassword(body.username, body.password);
-    return c.json(await this.auth.completeAuthRequest(requestId!, user._id));
+    return c.json(await this.auth.completeAuthRequest(requestId!, user.id));
   }
 
   async passkeyLoginOptions(c: Context) {

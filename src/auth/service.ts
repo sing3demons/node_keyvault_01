@@ -1,8 +1,8 @@
 import argon2 from "argon2";
-import { ObjectId } from "mongodb";
+import { randomUUID } from "node:crypto";
 import { randomToken, sha256, verifyPkceS256 } from "./crypto.js";
 import { HttpError, OAuthError } from "./errors.js";
-import type { AuthStore, UserDoc } from "./store.js";
+import { DuplicateKeyError, type AuthRepository, type User } from "./repository.js";
 
 export interface OAuthSettings {
   clientId: string;
@@ -50,7 +50,7 @@ export class AuthService {
   private dummyHash?: Promise<string>;
 
   constructor(
-    private readonly store: AuthStore,
+    private readonly repo: AuthRepository,
     private readonly oauth: OAuthSettings
   ) {}
 
@@ -65,22 +65,22 @@ export class AuthService {
       throw new HttpError(400, "Password must be 8-256 characters");
     }
     const passwordHash = await argon2.hash(password, ARGON2_OPTIONS);
-    const doc: UserDoc = { _id: new ObjectId(), username, passwordHash, createdAt: new Date() };
+    const user: User = { id: randomUUID(), username, passwordHash, createdAt: new Date() };
     try {
-      await this.store.users.insertOne(doc);
+      await this.repo.users.create(user);
     } catch (error) {
-      if ((error as { code?: number }).code === 11000) {
+      if (error instanceof DuplicateKeyError) {
         throw new HttpError(409, "Username already taken");
       }
       throw error;
     }
-    return { id: doc._id.toHexString(), username };
+    return { id: user.id, username };
   }
 
-  async verifyPassword(rawUsername: unknown, password: unknown): Promise<UserDoc> {
+  async verifyPassword(rawUsername: unknown, password: unknown): Promise<User> {
     const username = typeof rawUsername === "string" ? rawUsername.trim().toLowerCase() : "";
     const pw = typeof password === "string" ? password : "";
-    const user = username ? await this.store.users.findOne({ username }) : null;
+    const user = username ? await this.repo.users.findByUsername(username) : null;
     // Always run argon2 so response time does not reveal whether the user exists
     const hash = user?.passwordHash ?? (await this.getDummyHash());
     const ok = await argon2.verify(hash, pw).catch(() => false);
@@ -89,14 +89,9 @@ export class AuthService {
     }
     if (argon2.needsRehash(user.passwordHash, ARGON2_OPTIONS)) {
       const passwordHash = await argon2.hash(pw, ARGON2_OPTIONS);
-      await this.store.users.updateOne({ _id: user._id }, { $set: { passwordHash } });
+      await this.repo.users.updatePasswordHash(user.id, passwordHash);
     }
     return user;
-  }
-
-  async getUser(id: string | ObjectId): Promise<UserDoc | null> {
-    const _id = typeof id === "string" ? (ObjectId.isValid(id) ? new ObjectId(id) : null) : id;
-    return _id ? this.store.users.findOne({ _id }) : null;
   }
 
   private getDummyHash(): Promise<string> {
@@ -131,8 +126,8 @@ export class AuthService {
       return fail("invalid_scope", "Unsupported scope");
     }
     const requestId = randomToken(24);
-    await this.store.authRequests.insertOne({
-      _id: requestId,
+    await this.repo.authRequests.create({
+      id: requestId,
       clientId: p.clientId,
       redirectUri: p.redirectUri,
       state: p.state,
@@ -148,21 +143,21 @@ export class AuthService {
     if (typeof requestId !== "string" || !requestId) {
       throw new HttpError(400, "request_id is required");
     }
-    const req = await this.store.authRequests.findOne({ _id: requestId, expiresAt: { $gt: new Date() } });
+    const req = await this.repo.authRequests.findActive(requestId, new Date());
     if (!req) {
       throw new HttpError(400, "Authorization request expired or not found — please start sign-in again");
     }
   }
 
   /** User authenticated: consume the authorization request and issue a one-time code. */
-  async completeAuthRequest(requestId: string, userId: ObjectId): Promise<{ redirect: string }> {
-    const req = await this.store.authRequests.findOneAndDelete({ _id: requestId, expiresAt: { $gt: new Date() } });
+  async completeAuthRequest(requestId: string, userId: string): Promise<{ redirect: string }> {
+    const req = await this.repo.authRequests.consumeActive(requestId, new Date());
     if (!req) {
       throw new HttpError(400, "Authorization request expired or not found — please start sign-in again");
     }
     const code = randomToken();
-    await this.store.authCodes.insertOne({
-      _id: sha256(code),
+    await this.repo.authCodes.create({
+      id: sha256(code),
       userId,
       clientId: req.clientId,
       redirectUri: req.redirectUri,
@@ -190,12 +185,9 @@ export class AuthService {
       throw new OAuthError("invalid_client", "Unknown client", 401);
     }
     // Atomically mark as used so a code can only be redeemed once
-    const codeDoc = await this.store.authCodes.findOneAndUpdate(
-      { _id: sha256(p.code), used: false },
-      { $set: { used: true } }
-    );
+    const codeDoc = await this.repo.authCodes.redeem(sha256(p.code));
     if (!codeDoc) {
-      const replayed = await this.store.authCodes.findOne({ _id: sha256(p.code) });
+      const replayed = await this.repo.authCodes.find(sha256(p.code));
       if (replayed) {
         // RFC 6749 §4.1.2: code reuse => revoke tokens previously issued from it
         await this.revokeFamily(replayed.familyId);
@@ -223,12 +215,9 @@ export class AuthService {
     }
     const tokenHash = sha256(p.refreshToken);
     // Rotation: consume the old refresh token atomically
-    const current = await this.store.refreshTokens.findOneAndUpdate(
-      { _id: tokenHash, revoked: false },
-      { $set: { revoked: true } }
-    );
+    const current = await this.repo.tokens.rotateRefresh(tokenHash);
     if (!current) {
-      const reused = await this.store.refreshTokens.findOne({ _id: tokenHash });
+      const reused = await this.repo.tokens.findRefresh(tokenHash);
       if (reused) {
         // A rotated-out refresh token was presented again => assume theft, kill the whole family
         await this.revokeFamily(reused.familyId);
@@ -254,8 +243,7 @@ export class AuthService {
   async revoke(token: string | undefined): Promise<void> {
     if (!token) return;
     const hash = sha256(token);
-    const doc =
-      (await this.store.refreshTokens.findOne({ _id: hash })) ?? (await this.store.accessTokens.findOne({ _id: hash }));
+    const doc = (await this.repo.tokens.findRefresh(hash)) ?? (await this.repo.tokens.findAccess(hash));
     if (doc) {
       await this.revokeFamily(doc.familyId);
     }
@@ -264,38 +252,31 @@ export class AuthService {
   // ---------------------------------------------------------------- bearer validation
 
   async authenticate(accessToken: string): Promise<AuthenticatedUser | null> {
-    const token = await this.store.accessTokens.findOne({ _id: sha256(accessToken), expiresAt: { $gt: new Date() } });
+    const token = await this.repo.tokens.findActiveAccess(sha256(accessToken), new Date());
     if (!token) return null;
-    const user = await this.store.users.findOne({ _id: token.userId }, { projection: { username: 1 } });
+    const user = await this.repo.users.findById(token.userId);
     if (!user) return null;
-    return { id: user._id.toHexString(), username: user.username, scope: token.scope, clientId: token.clientId };
+    return { id: user.id, username: user.username, scope: token.scope, clientId: token.clientId };
   }
 
   // ---------------------------------------------------------------- helpers
 
-  private async issueTokens(userId: ObjectId, clientId: string, scope: string, familyId: string): Promise<TokenResponse> {
+  private async issueTokens(userId: string, clientId: string, scope: string, familyId: string): Promise<TokenResponse> {
     const accessToken = randomToken();
     const refreshToken = randomToken();
     const { accessTokenTtlSec, refreshTokenTtlSec } = this.oauth;
-    await Promise.all([
-      this.store.accessTokens.insertOne({
-        _id: sha256(accessToken),
-        userId,
-        clientId,
-        scope,
-        familyId,
-        expiresAt: later(accessTokenTtlSec * 1000)
-      }),
-      this.store.refreshTokens.insertOne({
-        _id: sha256(refreshToken),
+    await this.repo.tokens.createPair(
+      { id: sha256(accessToken), userId, clientId, scope, familyId, expiresAt: later(accessTokenTtlSec * 1000) },
+      {
+        id: sha256(refreshToken),
         userId,
         clientId,
         scope,
         familyId,
         revoked: false,
         expiresAt: later(refreshTokenTtlSec * 1000)
-      })
-    ]);
+      }
+    );
     return {
       access_token: accessToken,
       token_type: "Bearer",
@@ -305,11 +286,8 @@ export class AuthService {
     };
   }
 
-  private async revokeFamily(familyId: string): Promise<void> {
-    await Promise.all([
-      this.store.refreshTokens.updateMany({ familyId }, { $set: { revoked: true } }),
-      this.store.accessTokens.deleteMany({ familyId })
-    ]);
+  private revokeFamily(familyId: string): Promise<void> {
+    return this.repo.tokens.revokeFamily(familyId);
   }
 
   private normalizeScope(scope: string | undefined): string | null {

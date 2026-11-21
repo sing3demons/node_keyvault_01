@@ -43,7 +43,7 @@ curl -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" http://localhost:3000/se
 ```bash
 pnpm install
 cp .env.example .env
-docker compose up -d keyvault mongo   # รัน emulator + MongoDB
+docker compose up -d keyvault mongo   # รัน emulator + MongoDB (หรือ postgres ถ้า AUTH_DB=postgres)
 pnpm dev                        # API :3000 + UI (Vite) http://localhost:5173
 ```
 
@@ -56,7 +56,17 @@ pnpm dev                        # API :3000 + UI (Vite) http://localhost:5173
 
 ## Authentication
 
-แอพเป็น OAuth2 Authorization Server ของตัวเอง (เก็บข้อมูลใน MongoDB ด้วย native driver)
+แอพเป็น OAuth2 Authorization Server ของตัวเอง เลือก storage ได้ด้วย `AUTH_DB`:
+
+| `AUTH_DB` | storage | หมายเหตุ |
+|---|---|---|
+| `mongo` (default) | MongoDB native driver (`MONGO_URL`, `MONGO_DB`) | หมดอายุด้วย TTL index |
+| `postgres` | PostgreSQL ผ่าน Drizzle ORM (`DATABASE_URL`) | migration ใน `./drizzle` รันอัตโนมัติตอน start, ลบแถวหมดอายุทุก 10 นาที |
+
+โค้ด auth ทั้งหมดคุยผ่าน `AuthRepository` ([src/auth/repository.ts](src/auth/repository.ts)) — เพิ่ม DB ใหม่ได้โดย implement interface นี้ใน `src/auth/repositories/` แล้วเพิ่มใน `createAuthRepository()`
+
+แก้ schema Postgres ที่ `src/auth/repositories/drizzle/schema.ts` แล้วรัน `pnpm db:generate` เพื่อสร้าง migration ใหม่ (`pnpm db:studio` เปิด Drizzle Studio)
+
 
 - **OAuth2 Authorization Code + PKCE (S256)** — React UI เป็น public client `keyvault-web`
 - **Password** — hash ด้วย argon2id
