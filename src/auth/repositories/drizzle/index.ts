@@ -1,4 +1,4 @@
-import { and, asc, count, desc, eq, gt, isNotNull, lt, ne, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, gt, inArray, isNotNull, lt, ne, sql } from "drizzle-orm";
 import type { HashAlgorithm } from "../../../shared/hashing.js";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
@@ -17,6 +17,7 @@ import type {
   RefreshToken,
   Role,
   User,
+  UserRef,
   UserSummary,
   WebAuthnChallenge,
   WebAuthnCredential
@@ -159,6 +160,14 @@ export class DrizzleAuthRepository implements AuthRepository {
     },
     findByUsername: async (username: string) =>
       this.loadUser((await this.db.select().from(users).where(eq(users.username, username)))[0]),
+    findRefByUsername: async (username: string): Promise<UserRef | null> =>
+      (await this.db.select({ id: users.id, username: users.username }).from(users).where(eq(users.username, username)))[0] ??
+      null,
+    findRefs: async (ids: string[]): Promise<UserRef[]> => {
+      const valid = [...new Set(ids)].filter((id) => this.isUuid(id)); // uuid column rejects other formats
+      if (valid.length === 0) return [];
+      return this.db.select({ id: users.id, username: users.username }).from(users).where(inArray(users.id, valid));
+    },
     findByEmail: async (email: string) => this.loadUser((await this.db.select().from(users).where(eq(users.email, email)))[0]),
     markEmailVerified: async (userId: string, email: string, at: Date) => {
       if (!this.isUuid(userId)) return false;

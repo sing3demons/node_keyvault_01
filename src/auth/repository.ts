@@ -16,6 +16,7 @@ import type {
   RefreshToken,
   Role,
   User,
+  UserRef,
   UserSummary,
   WebAuthnChallenge,
   WebAuthnCredential
@@ -42,6 +43,10 @@ export interface UserRepository {
   list(): Promise<UserSummary[]>;
   setRoles(userId: string, roles: Role[]): Promise<void>;
   findByUsername(username: string): Promise<User | null>;
+  /** id + username only (no profiles / credentials). */
+  findRefByUsername(username: string): Promise<UserRef | null>;
+  /** id + username for many users in one query; unknown ids are left out. */
+  findRefs(ids: string[]): Promise<UserRef[]>;
   /** `email` is already lowercased. */
   findByEmail(email: string): Promise<User | null>;
   /** Marks the email verified, but only while the user still has exactly this address. @returns whether it did */

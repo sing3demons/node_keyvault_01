@@ -28,6 +28,12 @@ export interface User {
 export const ROLES = ["admin", "client_admin"] as const;
 export type Role = (typeof ROLES)[number];
 
+/** Just enough to show who someone is (secret owners, grants). */
+export interface UserRef {
+  id: string;
+  username: string;
+}
+
 /** Lightweight user row for admin listings (no profiles or credentials). */
 export interface UserSummary {
   id: string;

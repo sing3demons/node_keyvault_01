@@ -15,6 +15,7 @@ import type {
   RefreshToken,
   Role,
   User,
+  UserRef,
   UserSummary,
   WebAuthnChallenge,
   WebAuthnCredential
@@ -172,6 +173,17 @@ export class MongoAuthRepository implements AuthRepository {
       await this.users$.updateOne({ _id: this.byId(userId) }, { $set: { roles } });
     },
     findByUsername: async (username: string) => userFromDoc(await this.users$.findOne({ username })),
+    findRefByUsername: async (username: string): Promise<UserRef | null> => {
+      const d = await this.users$.findOne({ username }, { projection: { username: 1 } });
+      return d && { id: this.idOf(d._id), username: d.username };
+    },
+    findRefs: async (ids: string[]): Promise<UserRef[]> => {
+      if (ids.length === 0) return [];
+      // ids may be legacy ObjectIds (see byId)
+      const keys = ids.flatMap((id) => (/^[0-9a-f]{24}$/i.test(id) ? [id, new ObjectId(id)] : [id]));
+      const docs = await this.users$.find({ _id: { $in: keys as never[] } }, { projection: { username: 1 } }).toArray();
+      return docs.map((d) => ({ id: this.idOf(d._id), username: d.username }));
+    },
     findByEmail: async (email: string) => userFromDoc(await this.users$.findOne({ email })),
     markEmailVerified: async (userId: string, email: string, at: Date) =>
       (await this.users$.updateOne({ _id: this.byId(userId), email }, { $set: { emailVerifiedAt: at } })).matchedCount > 0,
@@ -445,6 +457,10 @@ export class MongoAuthRepository implements AuthRepository {
    */
   private byId(id: string): string {
     return (/^[0-9a-f]{24}$/i.test(id) ? { $in: [id, new ObjectId(id)] } : id) as unknown as string;
+  }
+
+  private idOf(id: unknown): string {
+    return id instanceof ObjectId ? id.toHexString() : String(id);
   }
 
   /** E11000 -> DuplicateKeyError naming the colliding field (from the violated index); otherwise null. */

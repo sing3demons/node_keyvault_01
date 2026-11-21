@@ -9,6 +9,7 @@ import { AzureKeyVaultSecretStore, NamedSecret } from "./keyvault/store.js";
 import { createSecretAclRepository } from "./keyvault/repositories/index.js";
 import { createAuthRepository } from "./auth/repositories/index.js";
 import { AuthService, SUPPORTED_SCOPES } from "./auth/service.js";
+import { AuthUserDirectory } from "./auth/user-directory.js";
 import { ClientService } from "./auth/clients.js";
 import { ClientOwnerService } from "./auth/client-owners.js";
 import { MasterAuthService } from "./auth/master.js";
@@ -38,15 +39,9 @@ async function main() {
   // Secrets: values in Key Vault, ownership/sharing in the app database
   const secretAcls = await createSecretAclRepository(dbSettings);
   await secretAcls.init();
-  const userDirectory = {
-    findByUsername: async (username: string) => {
-      const u = await authRepo.users.findByUsername(username);
-      return u && { id: u.id, username: u.username };
-    },
-    findByIds: async (ids: string[]) =>
-      (await Promise.all(ids.map((id) => authRepo.users.findById(id)))).flatMap((u) => (u ? [{ id: u.id, username: u.username }] : []))
-  };
-  const keyVaultSecret = new KeyVaultService(keyVaultSecretStore, secretAcls, userDirectory, [config.oidc.keysSecretName]);
+  const keyVaultSecret = new KeyVaultService(keyVaultSecretStore, secretAcls, new AuthUserDirectory(authRepo), [
+    config.oidc.keysSecretName
+  ]);
   const keyVaultHandler = new KeyVaultController(keyVaultSecret);
   // OIDC signing keys live in Key Vault
   const signingKeys = new SigningKeyRing(new NamedSecret(keyVaultSecretStore, config.oidc.keysSecretName), config.oidc);
