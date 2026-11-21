@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, type SecretSummary } from "./api";
+import { api, type Account, type SecretSummary } from "./api";
 import { addPasskey, logout, passkeysSupported, startLogin } from "./auth";
-import { DeleteDialog, EditDialog, SecretRow, Toasts, type Toast } from "./components";
+import { AccountDialog, DeleteDialog, EditDialog, SecretRow, Toasts, type Toast } from "./components";
 import { LockIcon, PlusIcon, RefreshIcon, SearchIcon } from "./icons";
 
 type Health = { state: "loading" } | { state: "ok"; provider: string } | { state: "error" };
@@ -14,7 +14,8 @@ export function App() {
   const [editor, setEditor] = useState<{ open: boolean; name: string | null }>({ open: false, name: null });
   const [deleting, setDeleting] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const [username, setUsername] = useState<string | null>(null);
+  const [account, setAccount] = useState<Account | null>(null);
+  const [accountOpen, setAccountOpen] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
 
   const toast = useCallback((message: string, error = false) => {
@@ -37,7 +38,7 @@ export function App() {
   useEffect(() => {
     api
       .me()
-      .then((me) => setUsername(me.username))
+      .then(setAccount)
       .catch(() => {});
     load();
     api
@@ -98,7 +99,13 @@ export function App() {
           {health.state === "ok" ? `Connected · ${health.provider}` : health.state === "error" ? "API unreachable" : "Connecting…"}
         </div>
         <div className="user-bar">
-          {username && <span className="user-name">@{username}</span>}
+          {account && (
+            <button className="btn-ghost" onClick={() => setAccountOpen(true)} title={`@${account.username}`}>
+              {account.displayProfile
+                ? `${account.displayProfile.firstName} ${account.displayProfile.lastName}`
+                : `@${account.username}`}
+            </button>
+          )}
           {passkeysSupported() && (
             <button className="btn-ghost" onClick={onAddPasskey} title="Register a passkey for this account">
               🔑 <span className="label-text">Add passkey</span>
@@ -195,6 +202,17 @@ export function App() {
           setDeleting(null);
           setSecrets((list) => list.filter((s) => s.name !== name));
           toast(`Deleted “${name}”`);
+        }}
+      />
+
+      <AccountDialog
+        account={account}
+        open={accountOpen}
+        onClose={() => setAccountOpen(false)}
+        onSaved={(updated) => {
+          setAccount(updated);
+          setAccountOpen(false);
+          toast("Account updated");
         }}
       />
 

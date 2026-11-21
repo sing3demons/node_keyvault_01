@@ -10,16 +10,64 @@ const base64url = z.string().regex(/^[A-Za-z0-9_-]+$/, "must be base64url");
 /** Login input is only normalized (not pattern-checked) so errors never hint which usernames exist. */
 const loginUsername = z.string().trim().toLowerCase().min(1).max(64);
 
+// ---------------------------------------------------------------- profile fields
+
+/** BCP 47 language tag, canonicalized (e.g. "EN-us" -> "en-US") so one language is never stored twice. */
+const langTag = z.string().transform((value, ctx) => {
+  try {
+    const [canonical] = Intl.getCanonicalLocales(value.trim());
+    if (canonical) return canonical;
+  } catch {
+    // invalid tag, reported below
+  }
+  ctx.addIssue({ code: "custom", message: "lang must be a BCP 47 language tag, e.g. th, en, en-US" });
+  return z.NEVER;
+});
+
+const email = z.string().trim().toLowerCase().pipe(z.email("email must be a valid email address").max(254));
+
+const localizedProfile = z.object({
+  lang: langTag,
+  firstName: z.string().trim().min(1, "firstName is required").max(100),
+  lastName: z.string().trim().min(1, "lastName is required").max(100)
+});
+
+const profiles = z
+  .array(localizedProfile)
+  .min(1, "at least one profile is required")
+  .max(20)
+  .refine((list) => new Set(list.map((n) => n.lang)).size === list.length, "each lang may appear only once");
+
+/** preferredLang must be one of the user's profile languages. */
+const preferredLangInProfiles = (v: { profiles?: { lang: string }[]; preferredLang?: string | null }) =>
+  !v.profiles || !v.preferredLang || v.profiles.some((n) => n.lang === v.preferredLang);
+const preferredLangIssue = { message: "preferredLang must be one of profiles[].lang", path: ["preferredLang"] };
+
 // ---------------------------------------------------------------- /auth
 
-export const registerBody = z.object({
-  username: z
-    .string()
-    .trim()
-    .toLowerCase()
-    .regex(/^[a-z0-9_.-]{3,32}$/, "Username must be 3-32 chars: a-z, 0-9, _ . -"),
-  password: z.string().min(8, "Password must be 8-256 characters").max(256, "Password must be 8-256 characters")
-});
+export const registerBody = z
+  .object({
+    username: z
+      .string()
+      .trim()
+      .toLowerCase()
+      .regex(/^[a-z0-9_.-]{3,32}$/, "Username must be 3-32 chars: a-z, 0-9, _ . -"),
+    email,
+    password: z.string().min(8, "Password must be 8-256 characters").max(256, "Password must be 8-256 characters"),
+    profiles,
+    preferredLang: langTag.optional()
+  })
+  .refine(preferredLangInProfiles, preferredLangIssue);
+
+/** PATCH /auth/me — every field optional; `preferredLang: null` clears the choice. */
+export const updateAccountBody = z
+  .object({
+    email: email.optional(),
+    profiles: profiles.optional(),
+    preferredLang: langTag.nullable().optional()
+  })
+  .refine((v) => Object.values(v).some((x) => x !== undefined), "nothing to update")
+  .refine(preferredLangInProfiles, preferredLangIssue);
 
 export const passwordLoginBody = z.object({
   request_id: nonEmpty,
@@ -74,6 +122,7 @@ export const credentialIdParam = z.object({
 });
 
 export type RegisterBody = z.infer<typeof registerBody>;
+export type UpdateAccountBody = z.infer<typeof updateAccountBody>;
 export type AttestationCredential = z.infer<typeof attestationCredential>;
 export type AssertionCredential = z.infer<typeof assertionCredential>;
 

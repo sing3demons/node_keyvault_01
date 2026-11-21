@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
-import { api, type SecretSummary } from "./api";
+import { api, LANGUAGES, type Account, type SecretSummary } from "./api";
 import { CopyIcon, EditIcon, EyeIcon, EyeOffIcon, TrashIcon } from "./icons";
 
 const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
@@ -279,5 +279,115 @@ export function Toasts({ items }: { items: Toast[] }) {
         </div>
       ))}
     </div>
+  );
+}
+
+/* ---------- account (email, per-language profiles, preferred language) ---------- */
+
+interface AccountProps {
+  account: Account | null;
+  open: boolean;
+  onClose: () => void;
+  onSaved: (account: Account) => void;
+}
+
+export function AccountDialog({ account, open, onClose, onSaved }: AccountProps) {
+  return (
+    <Modal open={open && !!account} onClose={onClose}>
+      {account && <AccountForm key={account.id} account={account} onClose={onClose} onSaved={onSaved} />}
+    </Modal>
+  );
+}
+
+type ProfileDraft = { lang: string; label: string; firstName: string; lastName: string };
+
+function AccountForm({ account, onClose, onSaved }: { account: Account } & Pick<AccountProps, "onClose" | "onSaved">) {
+  // one row per UI language, plus any other language the API already has
+  const initial: ProfileDraft[] = [
+    ...LANGUAGES.map(({ code, label }) => {
+      const p = account.profiles.find((x) => x.lang === code);
+      return { lang: code, label, firstName: p?.firstName ?? "", lastName: p?.lastName ?? "" };
+    }),
+    ...account.profiles
+      .filter((p) => !LANGUAGES.some((l) => l.code === p.lang))
+      .map((p) => ({ lang: p.lang, label: p.lang, firstName: p.firstName, lastName: p.lastName }))
+  ];
+  const [email, setEmail] = useState(account.email ?? "");
+  const [rows, setRows] = useState(initial);
+  const [preferred, setPreferred] = useState(account.preferredLang ?? "");
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const filled = rows.filter((r) => r.firstName.trim() && r.lastName.trim());
+  const setRow = (lang: string, field: "firstName" | "lastName", value: string) =>
+    setRows((list) => list.map((r) => (r.lang === lang ? { ...r, [field]: value } : r)));
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    const partial = rows.find((r) => !!r.firstName.trim() !== !!r.lastName.trim());
+    if (partial) return setError(`Fill both first and last name for ${partial.label}, or leave both empty.`);
+    if (filled.length === 0) return setError("Add your name in at least one language.");
+    setSaving(true);
+    setError("");
+    try {
+      const profiles = filled.map(({ lang, firstName, lastName }) => ({ lang, firstName, lastName }));
+      const keepPreferred = filled.some((r) => r.lang === preferred);
+      onSaved(
+        await api.updateAccount({
+          ...(email.trim() ? { email: email.trim() } : {}),
+          profiles,
+          preferredLang: keepPreferred ? preferred : null
+        })
+      );
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit}>
+      <div className="dlg-body">
+        <h2>Account</h2>
+        <label>
+          Email
+          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" />
+        </label>
+        {rows.map((r) => (
+          <div className="name-row" key={r.lang}>
+            <label>
+              First name · {r.label}
+              <input value={r.firstName} onChange={(e) => setRow(r.lang, "firstName", e.target.value)} />
+            </label>
+            <label>
+              Last name · {r.label}
+              <input value={r.lastName} onChange={(e) => setRow(r.lang, "lastName", e.target.value)} />
+            </label>
+          </div>
+        ))}
+        <label>
+          Show my name in
+          <select value={filled.some((r) => r.lang === preferred) ? preferred : ""} onChange={(e) => setPreferred(e.target.value)}>
+            <option value="">Default (first available)</option>
+            {filled.map((r) => (
+              <option key={r.lang} value={r.lang}>
+                {r.label}
+              </option>
+            ))}
+          </select>
+          <span className="hint">Only languages you have filled in can be chosen.</span>
+        </label>
+        <div className="error-text">{error}</div>
+      </div>
+      <div className="dlg-foot">
+        <button type="button" className="btn-ghost" onClick={onClose}>
+          Cancel
+        </button>
+        <button type="submit" className="btn-primary" disabled={saving}>
+          {saving ? "Saving…" : "Save"}
+        </button>
+      </div>
+    </form>
   );
 }

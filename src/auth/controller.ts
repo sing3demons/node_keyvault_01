@@ -8,7 +8,8 @@ import {
   passwordLoginBody,
   registerBody,
   parseTokenRequest,
-  revokeBody
+  revokeBody,
+  updateAccountBody
 } from "./schemas.js";
 import { parse, parseJsonBody } from "../shared/http.js";
 import type { AuthEnv } from "../shared/middleware.js";
@@ -68,7 +69,7 @@ export class AuthController {
   /** GET /oauth/userinfo (Bearer) */
   async userinfo(c: Context<AuthEnv>) {
     const user = c.get("user");
-    return c.json({ sub: user.id, username: user.username, scope: user.scope });
+    return c.json(await this.auth.userInfo(user.id, user.scope));
   }
 
   // ================================================================ /auth (used by the login page)
@@ -76,6 +77,17 @@ export class AuthController {
   async register(c: Context) {
     const body = await parseJsonBody(c, registerBody);
     return c.json(await this.auth.register(body), 201);
+  }
+
+  /** GET /auth/me (Bearer) */
+  async getAccount(c: Context<AuthEnv>) {
+    return c.json(await this.auth.getAccount(c.get("user").id));
+  }
+
+  /** PATCH /auth/me (Bearer) — email, profiles, preferredLang */
+  async updateAccount(c: Context<AuthEnv>) {
+    const body = await parseJsonBody(c, updateAccountBody);
+    return c.json(await this.auth.updateAccount(c.get("user").id, body));
   }
 
   async loginPassword(c: Context) {

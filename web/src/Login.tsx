@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { handleCallback, loginWithPasskey, loginWithPassword, passkeysSupported, register, startLogin } from "./auth";
+import { LANGUAGES } from "./api";
 import { LockIcon } from "./icons";
 
 function Shell({ title, sub, children }: { title: string; sub: string; children: React.ReactNode }) {
@@ -26,6 +27,10 @@ export function LoginPage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
+  const [email, setEmail] = useState("");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [lang, setLang] = useState<string>(LANGUAGES[0].code);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -64,7 +69,7 @@ export function LoginPage() {
     if (mode === "register") {
       if (password !== confirm) return setError("Passwords do not match");
       return run(async () => {
-        await register(username, password);
+        await register({ username, email, password, profiles: [{ lang, firstName, lastName }], preferredLang: lang });
         return loginWithPassword(requestId, username, password);
       });
     }
@@ -99,6 +104,35 @@ export function LoginPage() {
             maxLength={32}
           />
         </label>
+        {mode === "register" && (
+          <>
+            <label>
+              Email
+              <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} autoComplete="email" required />
+            </label>
+            <div className="name-row">
+              <label>
+                First name
+                <input value={firstName} onChange={(e) => setFirstName(e.target.value)} autoComplete="given-name" required />
+              </label>
+              <label>
+                Last name
+                <input value={lastName} onChange={(e) => setLastName(e.target.value)} autoComplete="family-name" required />
+              </label>
+              <label className="lang-field">
+                Language
+                <select value={lang} onChange={(e) => setLang(e.target.value)}>
+                  {LANGUAGES.map((l) => (
+                    <option key={l.code} value={l.code}>
+                      {l.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <span className="hint">You can add your name in other languages later in Account.</span>
+          </>
+        )}
         <label>
           Password
           <input

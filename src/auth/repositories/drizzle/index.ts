@@ -8,6 +8,8 @@ import type {
   AccessToken,
   AuthCode,
   AuthRequest,
+  LocalizedProfile,
+  AccountUpdate,
   RefreshToken,
   User,
   WebAuthnChallenge,
@@ -16,7 +18,7 @@ import type {
 import { DuplicateKeyError, type AuthRepository } from "../../repository.js";
 import * as schema from "./schema.js";
 
-const { users, userCredentials, webauthnChallenges, authRequests, authCodes, accessTokens, refreshTokens } = schema;
+const { users, userProfiles, userCredentials, webauthnChallenges, authRequests, authCodes, accessTokens, refreshTokens } = schema;
 
 type Db = NodePgDatabase<typeof schema>;
 // ---------------------------------------------------------------- row <-> domain mapping
@@ -84,11 +86,33 @@ export class DrizzleAuthRepository implements AuthRepository {
 
   readonly users = {
     create: (user: User) =>
-      this.insert("Username", () =>
+      this.insert("User", () =>
         this.db.transaction(async (tx) => {
-          await tx.insert(users).values({ id: user.id, username: user.username, createdAt: user.createdAt });
+          await tx.insert(users).values({
+            id: user.id,
+            username: user.username,
+            email: user.email,
+            preferredLang: user.preferredLang,
+            createdAt: user.createdAt
+          });
+          if (user.profiles.length > 0) {
+            await tx.insert(userProfiles).values(this.profileRows(user.id, user.profiles));
+          }
           if (user.credentials.length > 0) {
             await tx.insert(userCredentials).values(user.credentials.map((c) => toRow(user.id, c)));
+          }
+        })
+      ),
+    updateAccount: (userId: string, update: AccountUpdate) =>
+      this.insert("User", () =>
+        this.db.transaction(async (tx) => {
+          const set: Partial<typeof users.$inferInsert> = {};
+          if (update.email !== undefined) set.email = update.email;
+          if (update.preferredLang !== undefined) set.preferredLang = update.preferredLang; // null clears
+          if (Object.keys(set).length > 0) await tx.update(users).set(set).where(eq(users.id, userId));
+          if (update.profiles !== undefined) {
+            await tx.delete(userProfiles).where(eq(userProfiles.userId, userId));
+            if (update.profiles.length > 0) await tx.insert(userProfiles).values(this.profileRows(userId, update.profiles));
           }
         })
       ),
@@ -145,12 +169,27 @@ export class DrizzleAuthRepository implements AuthRepository {
 
   private async loadUser(row: typeof users.$inferSelect | undefined): Promise<User | null> {
     if (!row) return null;
-    const creds = await this.db
-      .select()
-      .from(userCredentials)
-      .where(eq(userCredentials.userId, row.id))
-      .orderBy(asc(userCredentials.createdAt));
-    return { id: row.id, username: row.username, createdAt: row.createdAt, credentials: creds.map(fromRow) };
+    const [profiles, creds] = await Promise.all([
+      this.db.select().from(userProfiles).where(eq(userProfiles.userId, row.id)).orderBy(asc(userProfiles.position)),
+      this.db
+        .select()
+        .from(userCredentials)
+        .where(eq(userCredentials.userId, row.id))
+        .orderBy(asc(userCredentials.createdAt))
+    ]);
+    return {
+      id: row.id,
+      username: row.username,
+      ...(row.email !== null ? { email: row.email } : {}),
+      profiles: profiles.map(({ lang, firstName, lastName }) => ({ lang, firstName, lastName })),
+      ...(row.preferredLang !== null ? { preferredLang: row.preferredLang } : {}),
+      createdAt: row.createdAt,
+      credentials: creds.map(fromRow)
+    };
+  }
+
+  private profileRows(userId: string, profiles: LocalizedProfile[]): (typeof userProfiles.$inferInsert)[] {
+    return profiles.map((n, position) => ({ userId, ...n, position }));
   }
 
   readonly challenges = {
@@ -261,13 +300,22 @@ export class DrizzleAuthRepository implements AuthRepository {
   }
 
   /** Runs an insert, mapping Postgres unique_violation (possibly wrapped by DrizzleQueryError) to DuplicateKeyError. */
+  /**
+   * Runs a write, mapping Postgres unique_violation (possibly wrapped by DrizzleQueryError) to DuplicateKeyError,
+   * naming the field from the violated constraint.
+   */
   private async insert(what: string, run: () => Promise<unknown>): Promise<void> {
     try {
       await run();
     } catch (error) {
-      const e = error as { code?: string; cause?: { code?: string } };
-      if (e.code === "23505" || e.cause?.code === "23505") throw new DuplicateKeyError(`${what} already exists`);
-      throw error;
+      const e = error as { code?: string; constraint?: string; cause?: { code?: string; constraint?: string } };
+      const pg = e.cause?.code ? e.cause : e;
+      if (pg.code !== "23505") throw error;
+      const constraint = pg.constraint ?? "";
+      if (constraint.includes("email")) throw new DuplicateKeyError("email");
+      if (constraint.includes("username")) throw new DuplicateKeyError("username");
+      if (constraint.startsWith("user_credentials")) throw new DuplicateKeyError("credential");
+      throw new DuplicateKeyError("id", `${what} already exists`);
     }
   }
 }

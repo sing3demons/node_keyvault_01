@@ -63,7 +63,14 @@ pnpm dev                        # API :3000 + UI (Vite) http://localhost:5173
 | `mongo` (default) | MongoDB native driver (`MONGO_URL`, `MONGO_DB`) | หมดอายุด้วย TTL index |
 | `postgres` | PostgreSQL ผ่าน Drizzle ORM (`DATABASE_URL`) | migration ใน `./drizzle` รันอัตโนมัติตอน start, ลบแถวหมดอายุทุก 10 นาที |
 
-**User model** — หนึ่ง user มีได้หลาย credential (`User.credentials[]`):
+**User model**
+
+- `email` (unique, lowercase) และ `profiles: [{ lang, firstName, lastName }]` — ชื่อแยกตามภาษา (BCP 47 เช่น `th`, `en`, `en-US`) ภาษาละ 1 ชุด
+- `preferredLang` — ภาษาที่ใช้แสดงชื่อ เลือกได้เฉพาะภาษาที่มีใน `profiles`; ไม่เลือก = ใช้ชุดแรก (`displayProfile`)
+- `GET /auth/me` / `PATCH /auth/me` (Bearer) ดูและแก้ `email`, `profiles`, `preferredLang` (`null` = ล้างค่า)
+- `/oauth/userinfo` คืน claim ตาม OpenID Connect: `email`, `name`, `given_name`, `family_name`, `locale` และแยกภาษา เช่น `given_name#th`
+
+หนึ่ง user มีได้หลาย credential (`User.credentials[]`):
 
 ```ts
 type Credential =
@@ -97,7 +104,8 @@ Flow: UI → `GET /oauth/authorize` → redirect ไป `/login?request_id=…` 
 
 - `GET /health`
 - `GET /oauth/authorize` · `POST /oauth/token` · `POST /oauth/revoke` · `GET /oauth/userinfo` (Bearer)
-- `POST /auth/register` · `POST /auth/login/password`
+- `POST /auth/register` (`username`, `email`, `password`, `profiles`, `preferredLang?`) · `POST /auth/login/password`
+- `GET /auth/me` · `PATCH /auth/me` (Bearer)
 - `POST /auth/webauthn/login/options` · `POST /auth/webauthn/login/verify`
 - `POST /auth/webauthn/register/options` · `POST /auth/webauthn/register/verify` · `GET/DELETE /auth/webauthn/credentials` (Bearer)
 

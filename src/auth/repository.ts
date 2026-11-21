@@ -8,6 +8,7 @@ import type {
   AuthCode,
   AuthRequest,
   Credential,
+  AccountUpdate,
   RefreshToken,
   User,
   WebAuthnChallenge,
@@ -16,14 +17,20 @@ import type {
 
 /** Thrown by `create` methods when a unique constraint is violated. */
 export class DuplicateKeyError extends Error {
-  constructor(message = "Duplicate key") {
+  constructor(
+    /** Which unique value collided. */
+    readonly field: "username" | "email" | "credential" | "id",
+    message = `${field} already exists`
+  ) {
     super(message);
   }
 }
 
 export interface UserRepository {
-  /** @throws DuplicateKeyError when the username (or a passkey credId) exists */
+  /** @throws DuplicateKeyError (field "username" | "email" | "credential") */
   create(user: User): Promise<void>;
+  /** Applies only the given fields; `profiles` replaces the whole list. @throws DuplicateKeyError (field "email") */
+  updateAccount(userId: string, update: AccountUpdate): Promise<void>;
   findById(id: string): Promise<User | null>;
   findByUsername(username: string): Promise<User | null>;
   /** Finds the owner of a passkey. */

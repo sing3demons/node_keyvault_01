@@ -481,3 +481,27 @@ label {
   height: 1px;
   background: var(--border);
 }
+
+/* account / register name fields */
+.name-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.name-row:has(.lang-field) {
+  grid-template-columns: 1fr 1fr auto;
+}
+select {
+  font: inherit;
+  padding: 9px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+@media (max-width: 480px) {
+  .name-row,
+  .name-row:has(.lang-field) {
+    grid-template-columns: 1fr;
+  }
+}

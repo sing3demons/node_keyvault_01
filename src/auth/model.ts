@@ -6,11 +6,34 @@ import type { HashAlgorithm } from "../shared/hashing.js";
 export interface User {
   id: string;
   username: string;
+  /** Lowercased, unique. Optional only for accounts created before email was collected. */
+  email?: string;
+  /** Per-language profile (name, ...) in one or more languages; at most one entry per `lang`. */
+  profiles: LocalizedProfile[];
+  /** Language of the profile to display; always one of `profiles[].lang` when set. */
+  preferredLang?: string;
   /** Every way this user can authenticate. A user always keeps at least one. */
   credentials: Credential[];
   createdAt: Date;
 }
 
+export interface LocalizedProfile {
+  /** BCP 47 language tag, e.g. "th", "en", "en-US". */
+  lang: string;
+  firstName: string;
+  lastName: string;
+}
+
+/** Account fields a user can change; omitted fields stay as they are, `preferredLang: null` clears it. */
+export interface AccountUpdate {
+  email?: string;
+  profiles?: LocalizedProfile[];
+  preferredLang?: string | null;
+}
+
+/** Profile in the preferred language, else the first one available. */
+export const displayProfile = (user: Pick<User, "profiles" | "preferredLang">): LocalizedProfile | undefined =>
+  user.profiles.find((p) => p.lang === user.preferredLang) ?? user.profiles[0];
 
 /**
  * Knowledge factors: something the user knows, stored only as a hash.

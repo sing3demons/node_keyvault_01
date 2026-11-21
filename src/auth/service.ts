@@ -5,9 +5,9 @@ import type { SecretHasher } from "../shared/hashing.js";
 import type { AuthenticatedUser, TokenAuthenticator } from "../shared/middleware.js";
 import { expiresIn } from "../shared/util.js";
 import { OAuthError, verifyPkceS256 } from "./oauth.js";
-import { isPassword, type User } from "./model.js";
+import { displayProfile, isPassword, type LocalizedProfile, type User } from "./model.js";
 import { DuplicateKeyError, type AuthRepository } from "./repository.js";
-import type { RegisterBody } from "./schemas.js";
+import type { RegisterBody, UpdateAccountBody } from "./schemas.js";
 
 export interface OAuthSettings {
   clientId: string;
@@ -39,6 +39,31 @@ const DEFAULT_SCOPE = "secrets";
 const AUTH_REQUEST_TTL_MS = 10 * 60_000;
 const AUTH_CODE_TTL_MS = 60_000;
 
+/** Public view of a user (never includes credentials). */
+export interface Account {
+  id: string;
+  username: string;
+  email?: string;
+  profiles: LocalizedProfile[];
+  preferredLang?: string;
+  /** Profile in preferredLang, else the first one. */
+  displayProfile?: LocalizedProfile;
+  createdAt: string;
+}
+
+/** OpenID Connect UserInfo claims (OIDC Core §5.1), with per-language profiles as "claim#lang" (§5.2). */
+export type UserInfoClaims = Record<string, string>;
+
+const toAccount = (u: User): Account => ({
+  id: u.id,
+  username: u.username,
+  ...(u.email !== undefined ? { email: u.email } : {}),
+  profiles: u.profiles,
+  ...(u.preferredLang !== undefined ? { preferredLang: u.preferredLang } : {}),
+  ...(displayProfile(u) ? { displayProfile: displayProfile(u) } : {}),
+  createdAt: u.createdAt.toISOString()
+});
+
 export class AuthService implements TokenAuthenticator {
   constructor(
     private readonly repo: AuthRepository,
@@ -49,23 +74,69 @@ export class AuthService implements TokenAuthenticator {
   // ---------------------------------------------------------------- users
 
   /** Input is already validated and normalized by `registerBody`. */
-  async register({ username, password }: RegisterBody): Promise<{ id: string; username: string }> {
+  async register({ username, email, password, profiles, preferredLang }: RegisterBody): Promise<Account> {
     const now = new Date();
     const user: User = {
       id: randomUUID(),
       username,
+      email,
+      profiles,
+      ...(preferredLang !== undefined ? { preferredLang } : {}),
       credentials: [{ id: randomUUID(), type: "password", ...(await this.hasher.hash(password)), createdAt: now }],
       createdAt: now
     };
     try {
       await this.repo.users.create(user);
     } catch (error) {
-      if (error instanceof DuplicateKeyError) {
-        throw new HttpError(409, "Username already taken");
-      }
-      throw error;
+      throw this.conflict(error);
     }
-    return { id: user.id, username };
+    return toAccount(user);
+  }
+
+  // ---------------------------------------------------------------- profile
+
+  async getAccount(userId: string): Promise<Account> {
+    return toAccount(await this.requireUser(userId));
+  }
+
+  /** Input is validated by `updateAccountBody`; preferredLang is re-checked against the stored profiles. */
+  async updateAccount(userId: string, update: UpdateAccountBody): Promise<Account> {
+    const user = await this.requireUser(userId);
+    const profiles = update.profiles ?? user.profiles;
+    let preferredLang = update.preferredLang;
+    if (typeof preferredLang === "string" && !profiles.some((n) => n.lang === preferredLang)) {
+      throw new HttpError(400, `preferredLang "${preferredLang}" is not one of your profile languages`);
+    }
+    // profiles replaced without the current preference => fall back to the first name
+    if (preferredLang === undefined && user.preferredLang && !profiles.some((n) => n.lang === user.preferredLang)) {
+      preferredLang = null;
+    }
+    try {
+      await this.repo.users.updateAccount(userId, { ...update, preferredLang });
+    } catch (error) {
+      throw this.conflict(error);
+    }
+    return this.getAccount(userId);
+  }
+
+  /** Claims for /oauth/userinfo. */
+  async userInfo(userId: string, scope: string): Promise<UserInfoClaims> {
+    const user = await this.requireUser(userId);
+    const shown = displayProfile(user);
+    const claims: UserInfoClaims = { sub: user.id, preferred_username: user.username, username: user.username, scope };
+    if (user.email) claims.email = user.email;
+    if (shown) {
+      claims.name = `${shown.firstName} ${shown.lastName}`;
+      claims.given_name = shown.firstName;
+      claims.family_name = shown.lastName;
+      claims.locale = shown.lang;
+    }
+    for (const n of user.profiles) {
+      claims[`name#${n.lang}`] = `${n.firstName} ${n.lastName}`;
+      claims[`given_name#${n.lang}`] = n.firstName;
+      claims[`family_name#${n.lang}`] = n.lastName;
+    }
+    return claims;
   }
 
   async verifyPassword(username: string, password: string): Promise<User> {
@@ -235,6 +306,20 @@ export class AuthService implements TokenAuthenticator {
   }
 
   // ---------------------------------------------------------------- helpers
+
+  private async requireUser(userId: string): Promise<User> {
+    const user = await this.repo.users.findById(userId);
+    if (!user) throw new HttpError(404, "User not found");
+    return user;
+  }
+
+  /** DuplicateKeyError -> 409 naming what is taken; anything else passes through. */
+  private conflict(error: unknown): unknown {
+    if (!(error instanceof DuplicateKeyError)) return error;
+    if (error.field === "email") return new HttpError(409, "Email already registered");
+    if (error.field === "username") return new HttpError(409, "Username already taken");
+    return new HttpError(409, error.message);
+  }
 
   private async issueTokens(userId: string, clientId: string, scope: string, familyId: string): Promise<TokenResponse> {
     const accessToken = randomToken();

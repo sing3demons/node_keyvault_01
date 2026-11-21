@@ -1,13 +1,31 @@
 import { sql } from "drizzle-orm";
-import { boolean, check, index, integer, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { boolean, check, index, integer, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 const ts = (name: string) => timestamp(name, { withTimezone: true, mode: "date" });
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey(),
   username: text("username").notNull().unique(),
+  // nullable: accounts created before email was collected (UNIQUE allows many NULLs)
+  email: text("email").unique(),
+  preferredLang: text("preferred_lang"),
   createdAt: ts("created_at").notNull()
 });
+
+/** User.profiles[]: one row per language; `position` keeps the list order (profiles[0] is the fallback). */
+export const userProfiles = pgTable(
+  "user_profiles",
+  {
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    lang: text("lang").notNull(),
+    firstName: text("first_name").notNull(),
+    lastName: text("last_name").notNull(),
+    position: integer("position").notNull()
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.lang] })]
+);
 
 /**
  * One row per credential (User.credentials[]). Columns are grouped by type;

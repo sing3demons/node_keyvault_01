@@ -6,6 +6,8 @@ import type {
   AccessToken,
   AuthCode,
   AuthRequest,
+  LocalizedProfile,
+  AccountUpdate,
   RefreshToken,
   User,
   WebAuthnChallenge,
@@ -16,8 +18,9 @@ import { DuplicateKeyError, type AuthRepository } from "../repository.js";
 // ---------------------------------------------------------------- document <-> domain mapping
 
 /**
- * Users are stored as one document with credentials embedded:
- *   { _id, username, createdAt, credentials: [{ id, type, key, value?, algorithm?, webauthn?, createdAt, lastUsedAt? }] }
+ * Users are stored as one document with profiles and credentials embedded:
+ *   { _id, username, email?, profiles: [{ lang, firstName, lastName }], preferredLang?, createdAt,
+ *     credentials: [{ id, type, key, value?, algorithm?, webauthn?, createdAt, lastUsedAt? }] }
  * `key` is storage-only and backs a unique multikey index:
  *   "<secretType>:<userId>" (one password / pin / ... per user) | "webauthn:<credId>" (credId globally unique).
  * (A unique index on credentials.webauthn.credId would collide on the null produced by password entries.)
@@ -46,6 +49,9 @@ const userFromDoc = (doc: Document | null): User | null => {
   return {
     id,
     username: doc.username,
+    ...(typeof doc.email === "string" ? { email: doc.email } : {}),
+    profiles: ((doc.profiles ?? []) as LocalizedProfile[]).map(({ lang, firstName, lastName }) => ({ lang, firstName, lastName })),
+    ...(typeof doc.preferredLang === "string" ? { preferredLang: doc.preferredLang } : {}),
     createdAt: doc.createdAt,
     credentials: ((doc.credentials ?? []) as CredentialElement[]).map(fromElement)
   };
@@ -102,14 +108,30 @@ export class MongoAuthRepository implements AuthRepository {
       const doc: UserDoc = {
         _id: user.id,
         username: user.username,
+        ...(user.email !== undefined ? { email: user.email } : {}),
+        profiles: user.profiles,
+        ...(user.preferredLang !== undefined ? { preferredLang: user.preferredLang } : {}),
         createdAt: user.createdAt,
         credentials: user.credentials.map((c) => toElement(user.id, c))
       };
       try {
         await this.users$.insertOne(doc);
       } catch (error) {
-        if (this.isDuplicate(error)) throw new DuplicateKeyError("Username already exists");
-        throw error;
+        throw this.duplicateError(error) ?? error;
+      }
+    },
+    updateAccount: async (userId: string, update: AccountUpdate) => {
+      const $set: Record<string, unknown> = {};
+      const $unset: Record<string, ""> = {};
+      if (update.email !== undefined) $set.email = update.email;
+      if (update.profiles !== undefined) $set.profiles = update.profiles;
+      if (update.preferredLang === null) $unset.preferredLang = "";
+      else if (update.preferredLang !== undefined) $set.preferredLang = update.preferredLang;
+      if (Object.keys($set).length === 0 && Object.keys($unset).length === 0) return;
+      try {
+        await this.users$.updateOne({ _id: this.byId(userId) }, { $set, ...(Object.keys($unset).length ? { $unset } : {}) });
+      } catch (error) {
+        throw this.duplicateError(error) ?? error;
       }
     },
     findById: async (id: string) => userFromDoc(await this.users$.findOne({ _id: this.byId(id) })),
@@ -131,11 +153,10 @@ export class MongoAuthRepository implements AuthRepository {
           { $push: { credentials: element } }
         );
         if (res.matchedCount === 0 && (await this.users$.countDocuments({ _id: this.byId(userId) })) > 0) {
-          throw new DuplicateKeyError("Credential already exists");
+          throw new DuplicateKeyError("credential");
         }
       } catch (error) {
-        if (this.isDuplicate(error)) throw new DuplicateKeyError("Credential already exists");
-        throw error;
+        throw this.duplicateError(error) ?? error;
       }
     },
     updateSecret: async (userId: string, credentialId: string, value: string, algorithm: HashAlgorithm) => {
@@ -206,6 +227,8 @@ export class MongoAuthRepository implements AuthRepository {
     const ttl = { expireAfterSeconds: 0 };
     await Promise.all([
       this.users$.createIndex({ username: 1 }, { unique: true }),
+      // partial: accounts created before email was collected have none
+      this.users$.createIndex({ email: 1 }, { unique: true, partialFilterExpression: { email: { $type: "string" } } }),
       this.users$.createIndex(
         { "credentials.key": 1 },
         { unique: true, partialFilterExpression: { "credentials.key": { $exists: true } } }
@@ -287,15 +310,21 @@ export class MongoAuthRepository implements AuthRepository {
     return (/^[0-9a-f]{24}$/i.test(id) ? { $in: [id, new ObjectId(id)] } : id) as unknown as string;
   }
 
-  private isDuplicate(error: unknown): boolean {
-    return (error as { code?: number }).code === 11000;
+  /** E11000 -> DuplicateKeyError naming the colliding field (from the violated index); otherwise null. */
+  private duplicateError(error: unknown): DuplicateKeyError | null {
+    const e = error as { code?: number; keyPattern?: Record<string, unknown> };
+    if (e.code !== 11000) return null;
+    const key = Object.keys(e.keyPattern ?? {})[0] ?? "";
+    if (key === "username" || key === "email") return new DuplicateKeyError(key);
+    if (key.startsWith("credentials")) return new DuplicateKeyError("credential");
+    return new DuplicateKeyError("id");
   }
 
   private async insert<T extends { id: string }>(col: Collection<Doc<T>>, value: T, what: string): Promise<void> {
     try {
       await col.insertOne(toDoc(value) as never);
     } catch (error) {
-      if (this.isDuplicate(error)) throw new DuplicateKeyError(`${what} already exists`);
+      if (this.duplicateError(error)) throw new DuplicateKeyError("id", `${what} already exists`);
       throw error;
     }
   }

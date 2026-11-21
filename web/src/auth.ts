@@ -199,8 +199,15 @@ async function postJson<T>(path: string, body: unknown, bearer?: string): Promis
   return json as T;
 }
 
-export const register = (username: string, password: string) =>
-  postJson<{ id: string; username: string }>("/auth/register", { username, password });
+export interface RegisterInput {
+  username: string;
+  email: string;
+  password: string;
+  profiles: { lang: string; firstName: string; lastName: string }[];
+  preferredLang?: string;
+}
+
+export const register = (input: RegisterInput) => postJson<{ id: string; username: string }>("/auth/register", input);
 
 export const loginWithPassword = (requestId: string, username: string, password: string) =>
   postJson<{ redirect: string }>("/auth/login/password", { request_id: requestId, username, password });

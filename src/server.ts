@@ -49,6 +49,8 @@ async function main() {
 
   // --- Authentication used by the login page (password = argon2id, passkey = fido2-lib)
   app.post("/auth/register", (c) => auth.register(c));
+  app.get("/auth/me", bearer, (c) => auth.getAccount(c));
+  app.patch("/auth/me", bearer, (c) => auth.updateAccount(c));
   app.post("/auth/login/password", (c) => auth.loginPassword(c));
   app.post("/auth/webauthn/login/options", (c) => auth.passkeyLoginOptions(c));
   app.post("/auth/webauthn/login/verify", (c) => auth.passkeyLoginVerify(c));
