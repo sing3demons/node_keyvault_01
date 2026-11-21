@@ -148,6 +148,19 @@ type Credential =
 - ปุ่ม "Devices" ใน UI: ดูรายการ, "Sign out" (revoke token ของอุปกรณ์นั้น แต่เก็บประวัติไว้), ถังขยะ (sign out + ลบออกจากรายการ); อุปกรณ์ที่ใช้อยู่ให้ใช้ Log out
 - อยู่หลัง reverse proxy ให้ตั้ง `TRUST_PROXY=true` เพื่อให้ IP มาจาก `X-Forwarded-For`
 
+**โครงสร้างโค้ด auth** (`src/auth/`, ประกอบกันใน [src/auth/index.ts](src/auth/index.ts); แต่ละโฟลเดอร์มี service + `routes.ts`)
+
+| โฟลเดอร์ | หน้าที่ |
+|---|---|
+| `oauth/` | `/oauth/*`, discovery, ID Token (`oidc.ts`), PKCE / OAuth errors (`protocol.ts`) |
+| `sign-in/` | สมัคร, login ด้วย password / passkey, ขั้นยืนยัน email (code / link) |
+| `accounts/` | `/auth/me`, `/admin/users`, ตรวจ password, `UserDirectory` ให้โมดูล secrets |
+| `email/` | รหัส / link ที่ส่งทาง email |
+| `devices/` · `webauthn/` | อุปกรณ์ที่เคย login · จัดการ passkey |
+| `clients/` · `master/` | OAuth clients + owners · master account และ login ของ master |
+
+`model.ts` (type), `repository.ts` (interface ของ storage), `schemas.ts` (zod) และ `repositories/` ใช้ร่วมกันทุกโฟลเดอร์ — `src/server.ts` แค่ประกอบ storage + โมดูล + routes
+
 โค้ด auth ทั้งหมดคุยผ่าน `AuthRepository` ([src/auth/repository.ts](src/auth/repository.ts)) — เพิ่ม DB ใหม่ได้โดย implement interface นี้ใน `src/auth/repositories/` แล้วเพิ่มใน `createAuthRepository()`
 
 แก้ schema Postgres ที่ `src/auth/repositories/drizzle/schema.ts` แล้วรัน `pnpm db:generate` เพื่อสร้าง migration ใหม่ (`pnpm db:studio` เปิด Drizzle Studio)
@@ -164,6 +177,19 @@ Flow: UI → `GET /oauth/authorize` → redirect ไป `/login?request_id=…` 
 
 ตั้งค่าใน `.env` (เฉพาะของทั้ง server): `MONGO_URL`, `MONGO_DB`, `WEBAUTHN_RP_ID`, `WEBAUTHN_ORIGINS`, `OIDC_ISSUER`, `SMTP_URL`, … (ดู `.env.example`) — ค่าของแต่ละแอปอยู่ที่ client
 — `WEBAUTHN_ORIGINS` ต้องตรงกับ origin ที่เปิดหน้า login จริง (dev: `:5173`, build: port ของ API)
+
+## Test (end-to-end)
+
+ทดสอบกับ server จริงทั้ง MongoDB และ PostgreSQL (ใช้ DB `keyvault_e2e` แยก ไม่แตะข้อมูล dev, server ที่ port 3999, อ่าน email จาก Mailpit):
+
+```bash
+docker compose up -d mongo postgres keyvault mailpit
+pnpm test:e2e                          # ทุก suite ทั้งสอง DB
+pnpm test:e2e --db postgres            # DB เดียว
+pnpm test:e2e --only clients,master    # บาง suite
+```
+
+suite อยู่ใน `test/e2e/*.test.mjs` (email code / link, clients, client_credentials, master, owners, secrets, mail_from); ค่าที่ server ใช้ตอนทดสอบกำหนดใน `test/e2e/run.mjs` จึงไม่ขึ้นกับ `.env` ของเครื่อง; secret ที่ทดสอบสร้างใน Key Vault emulator ถูกลบตอนจบ
 
 ## Endpoint
 

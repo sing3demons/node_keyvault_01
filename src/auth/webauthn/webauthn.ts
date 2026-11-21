@@ -1,11 +1,11 @@
 import { Fido2Lib } from "fido2-lib";
 import { randomUUID } from "node:crypto";
-import { fromBase64Url, randomToken, toBase64Url } from "../shared/crypto.js";
-import { HttpError } from "../shared/http.js";
-import { errorMessage, expiresIn } from "../shared/util.js";
-import { isWebAuthn, type WebAuthnCredential } from "./model.js";
-import { DuplicateKeyError, type AuthRepository } from "./repository.js";
-import type { AssertionCredential, AttestationCredential } from "./schemas.js";
+import { fromBase64Url, randomToken, toBase64Url } from "../../shared/crypto.js";
+import { HttpError } from "../../shared/http.js";
+import { errorMessage, expiresIn } from "../../shared/util.js";
+import { isWebAuthn, type WebAuthnCredential } from "../model.js";
+import { DuplicateKeyError, type AuthRepository } from "../repository.js";
+import type { AssertionCredential, AttestationCredential } from "../schemas.js";
 
 export interface WebAuthnSettings {
   rpId: string;

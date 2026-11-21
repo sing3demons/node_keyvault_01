@@ -10,9 +10,9 @@
 // (no plain password left on disk); the stored account keeps working until disabled.
 
 import { createHash, timingSafeEqual } from "node:crypto";
-import { HASH_ALGORITHMS, hasherFor, type HashAlgorithm } from "../shared/hashing.js";
-import { MASTER_CLIENT_ID } from "./model.js";
-import type { AuthRepository } from "./repository.js";
+import { HASH_ALGORITHMS, hasherFor, type HashAlgorithm } from "../../shared/hashing.js";
+import { MASTER_CLIENT_ID } from "../model.js";
+import type { AuthRepository } from "../repository.js";
 
 const ACCOUNT_KEY = "master_account";
 const MIN_PASSWORD = 16;

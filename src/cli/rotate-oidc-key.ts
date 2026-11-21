@@ -4,7 +4,7 @@
 // Running servers pick the new key up on their next sync (OIDC_KEYS_SYNC_SEC).
 
 import { config } from "../config.js";
-import { SigningKeyRing } from "../auth/oidc.js";
+import { SigningKeyRing } from "../auth/oauth/oidc.js";
 import { AzureKeyVaultSecretStore, NamedSecret } from "../keyvault/store.js";
 
 async function main() {

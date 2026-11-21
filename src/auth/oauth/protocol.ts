@@ -1,7 +1,7 @@
 // OAuth 2.0 protocol pieces: error responses (RFC 6749) and PKCE (RFC 7636).
 
 import { createHash, timingSafeEqual } from "node:crypto";
-import { HttpError } from "../shared/http.js";
+import { HttpError } from "../../shared/http.js";
 
 export type OAuthErrorCode =
   | "invalid_request"

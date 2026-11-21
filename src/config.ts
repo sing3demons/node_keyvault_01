@@ -1,5 +1,5 @@
 import dotenv from "dotenv";
-import { parseMasterEnv, type MasterEnv } from "./auth/master-account.js";
+import { parseMasterEnv, type MasterEnv } from "./auth/master/account.js";
 
 dotenv.config();
 
@@ -152,3 +152,4 @@ class Config {
 }
 
 export const config = new Config();
+export type AppConfig = typeof config;

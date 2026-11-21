@@ -2,13 +2,13 @@
 // (RFC 7591 §3.2.1 / RFC 7592), and client authentication at the token / revocation endpoints (RFC 6749 §2.3).
 
 import { timingSafeEqual } from "node:crypto";
-import { randomToken, sha256 } from "../shared/crypto.js";
-import { HttpError } from "../shared/http.js";
-import { MASTER_CLIENT_ID, type ClientGrantType, type EmailVerificationMethod, type OAuthClient, type TokenEndpointAuthMethod } from "./model.js";
-import { OAuthError } from "./oauth.js";
-import { isValidSender } from "../shared/mail.js";
-import { DuplicateKeyError, type AuthRepository } from "./repository.js";
-import type { ClientMetadataBody } from "./schemas.js";
+import { randomToken, sha256 } from "../../shared/crypto.js";
+import { HttpError } from "../../shared/http.js";
+import { MASTER_CLIENT_ID, type ClientGrantType, type EmailVerificationMethod, type OAuthClient, type TokenEndpointAuthMethod } from "../model.js";
+import { OAuthError } from "../oauth/protocol.js";
+import { isValidSender } from "../../shared/mail.js";
+import { DuplicateKeyError, type AuthRepository } from "../repository.js";
+import type { ClientMetadataBody } from "../schemas.js";
 
 /** Lifetimes used when the metadata does not set them, and their allowed ranges. */
 export interface ClientLimits {

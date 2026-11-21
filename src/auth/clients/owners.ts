@@ -3,10 +3,10 @@
 // disabled for good — stored in the database, so a leaked env value stops working even if it stays set.
 // Invariant: at least one way in remains (an owner, or an enabled master).
 
-import { HttpError } from "../shared/http.js";
-import type { MasterAccountStore } from "./master-account.js";
-import { MASTER_CLIENT_ID } from "./model.js";
-import type { AuthRepository } from "./repository.js";
+import { HttpError } from "../../shared/http.js";
+import type { MasterAccountStore } from "../master/account.js";
+import { MASTER_CLIENT_ID } from "../model.js";
+import type { AuthRepository } from "../repository.js";
 
 const ROLE = "client_admin";
 const MASTER_KEY = "master_credential";

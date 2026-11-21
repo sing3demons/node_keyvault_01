@@ -18,7 +18,7 @@ import {
   type JWK
 } from "jose";
 import { z } from "zod";
-import { errorMessage } from "../shared/util.js";
+import { errorMessage } from "../../shared/util.js";
 
 export interface OidcSettings {
   /** How often `init()`-ed rings reload the key set from the store (and rotate when due). */

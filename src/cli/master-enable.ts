@@ -4,8 +4,8 @@
 //   node dist/cli/master-enable.js     (built image)
 
 import { config } from "../config.js";
-import { enableMasterDirectly } from "../auth/client-owners.js";
-import { MasterAccountStore } from "../auth/master-account.js";
+import { enableMasterDirectly } from "../auth/clients/owners.js";
+import { MasterAccountStore } from "../auth/master/account.js";
 import { createAuthRepository } from "../auth/repositories/index.js";
 
 async function main() {

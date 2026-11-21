@@ -1,9 +1,9 @@
 // The keyvault module's view of users (UserDirectory, src/keyvault/acl.ts), backed by the auth database.
 // keyvault only needs to resolve "who" for owners and grants, so this reads id + username and nothing else.
 
-import type { UserDirectory } from "../keyvault/acl.js";
-import type { UserRef } from "./model.js";
-import type { AuthRepository } from "./repository.js";
+import type { UserDirectory } from "../../keyvault/acl.js";
+import type { UserRef } from "../model.js";
+import type { AuthRepository } from "../repository.js";
 
 export class AuthUserDirectory implements UserDirectory {
   constructor(private readonly repo: AuthRepository) {}

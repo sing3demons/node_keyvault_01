@@ -2,10 +2,10 @@
 // (which signs that device out by revoking the tokens it was issued).
 
 import { randomUUID } from "node:crypto";
-import { sha256 } from "../shared/crypto.js";
-import { HttpError } from "../shared/http.js";
-import type { SignInMethod } from "./model.js";
-import type { AuthRepository } from "./repository.js";
+import { sha256 } from "../../shared/crypto.js";
+import { HttpError } from "../../shared/http.js";
+import type { SignInMethod } from "../model.js";
+import type { AuthRepository } from "../repository.js";
 
 /** What the HTTP layer knows about the browser making a sign-in request. */
 export interface DeviceContext {

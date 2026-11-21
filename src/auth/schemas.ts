@@ -4,7 +4,7 @@
 import { z } from "zod";
 import { formatZodError } from "../shared/http.js";
 import { CLIENT_GRANT_TYPES, EMAIL_VERIFICATION_METHODS, ROLES, TOKEN_ENDPOINT_AUTH_METHODS } from "./model.js";
-import { OAuthError } from "./oauth.js";
+import { OAuthError } from "./oauth/protocol.js";
 
 const nonEmpty = z.string().min(1);
 const base64url = z.string().regex(/^[A-Za-z0-9_-]+$/, "must be base64url");

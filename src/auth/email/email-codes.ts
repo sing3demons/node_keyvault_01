@@ -9,12 +9,12 @@
 //   - verify-only links mark the address verified; the account page that asked notices by polling (poll()).
 
 import { randomInt, timingSafeEqual } from "node:crypto";
-import { randomToken, sha256 } from "../shared/crypto.js";
-import { HttpError } from "../shared/http.js";
-import type { Mailer } from "../shared/mail.js";
-import { errorMessage, expiresIn } from "../shared/util.js";
-import type { EmailChallenge, EmailChallengePurpose, EmailChallengeReason, EmailVerificationMethod } from "./model.js";
-import type { AuthRepository } from "./repository.js";
+import { randomToken, sha256 } from "../../shared/crypto.js";
+import { HttpError } from "../../shared/http.js";
+import type { Mailer } from "../../shared/mail.js";
+import { errorMessage, expiresIn } from "../../shared/util.js";
+import type { EmailChallenge, EmailChallengePurpose, EmailChallengeReason, EmailVerificationMethod } from "../model.js";
+import type { AuthRepository } from "../repository.js";
 
 export interface EmailCodeSettings {
   ttlSec: number;

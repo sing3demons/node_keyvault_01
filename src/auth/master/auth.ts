@@ -2,14 +2,14 @@
 // (MASTER_EMAIL_VERIFICATION, default otp), then a short-lived session token for the client-management API.
 // Sessions are access-token rows of the reserved client MASTER_CLIENT_ID with scope "master" and no user.
 
-import { randomToken, sha256 } from "../shared/crypto.js";
-import { HttpError } from "../shared/http.js";
-import { expiresIn } from "../shared/util.js";
-import type { ClientOwnerService } from "./client-owners.js";
-import type { EmailCodeService, MailContext, PendingVerification } from "./email-codes.js";
-import type { MasterAccountStore } from "./master-account.js";
-import { MASTER_CLIENT_ID, MASTER_SCOPE, type EmailVerificationMethod } from "./model.js";
-import type { AuthRepository } from "./repository.js";
+import { randomToken, sha256 } from "../../shared/crypto.js";
+import { HttpError } from "../../shared/http.js";
+import { expiresIn } from "../../shared/util.js";
+import type { ClientOwnerService } from "../clients/owners.js";
+import type { EmailCodeService, MailContext, PendingVerification } from "../email/email-codes.js";
+import type { MasterAccountStore } from "./account.js";
+import { MASTER_CLIENT_ID, MASTER_SCOPE, type EmailVerificationMethod } from "../model.js";
+import type { AuthRepository } from "../repository.js";
 
 const SESSION_TTL_SEC = 60 * 60;
 
