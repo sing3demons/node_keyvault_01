@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type SecretSummary } from "./api";
+import { addPasskey, logout, passkeysSupported, startLogin } from "./auth";
 import { DeleteDialog, EditDialog, SecretRow, Toasts, type Toast } from "./components";
 import { LockIcon, PlusIcon, RefreshIcon, SearchIcon } from "./icons";
 
@@ -13,6 +14,7 @@ export function App() {
   const [editor, setEditor] = useState<{ open: boolean; name: string | null }>({ open: false, name: null });
   const [deleting, setDeleting] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [username, setUsername] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
   const toast = useCallback((message: string, error = false) => {
@@ -33,6 +35,10 @@ export function App() {
   }, [toast]);
 
   useEffect(() => {
+    api
+      .me()
+      .then((me) => setUsername(me.username))
+      .catch(() => {});
     load();
     api
       .health()
@@ -60,6 +66,21 @@ export function App() {
 
   const openCreate = () => setEditor({ open: true, name: null });
 
+  const onAddPasskey = async () => {
+    try {
+      await addPasskey(navigator.platform ? `Passkey · ${navigator.platform}` : undefined);
+      toast("Passkey added — you can now sign in with it");
+    } catch (e) {
+      const err = e as Error;
+      if (err.name !== "NotAllowedError") toast(err.message, true);
+    }
+  };
+
+  const onLogout = async () => {
+    await logout();
+    startLogin();
+  };
+
   return (
     <div className="wrap">
       <header>
@@ -75,6 +96,17 @@ export function App() {
         <div className="status">
           <span className={`dot ${health.state === "ok" ? "ok" : health.state === "error" ? "err" : ""}`} />
           {health.state === "ok" ? `Connected · ${health.provider}` : health.state === "error" ? "API unreachable" : "Connecting…"}
+        </div>
+        <div className="user-bar">
+          {username && <span className="user-name">@{username}</span>}
+          {passkeysSupported() && (
+            <button className="btn-ghost" onClick={onAddPasskey} title="Register a passkey for this account">
+              🔑 <span className="label-text">Add passkey</span>
+            </button>
+          )}
+          <button className="btn-ghost" onClick={onLogout}>
+            Log out
+          </button>
         </div>
       </header>
 

@@ -1,2 +1,4 @@
 allowBuilds:
   esbuild: true
+  argon2: true
+  cbor-extract: true

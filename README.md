@@ -25,14 +25,17 @@ docker compose up --build
 
 ### ตัวอย่างเรียกใช้งาน API
 
+`/secrets/*` ต้องแนบ `Authorization: Bearer <access_token>` (ได้จาก OAuth2 flow ด้านล่าง)
+
 ```bash
 curl -X PUT http://localhost:3000/secrets/demo \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"value":"hello-local"}'
 
-curl http://localhost:3000/secrets/demo
+curl -H "Authorization: Bearer $ACCESS_TOKEN" http://localhost:3000/secrets/demo
 
-curl -X DELETE http://localhost:3000/secrets/demo
+curl -X DELETE -H "Authorization: Bearer $ACCESS_TOKEN" http://localhost:3000/secrets/demo
 ```
 
 ## Run แบบ local (ไม่ใช้ docker app)
@@ -40,7 +43,7 @@ curl -X DELETE http://localhost:3000/secrets/demo
 ```bash
 pnpm install
 cp .env.example .env
-docker compose up -d keyvault   # รันแค่ emulator
+docker compose up -d keyvault mongo   # รัน emulator + MongoDB
 pnpm dev                        # API :3000 + UI (Vite) http://localhost:5173
 ```
 
@@ -51,9 +54,32 @@ pnpm dev                        # API :3000 + UI (Vite) http://localhost:5173
 # แล้วใส่ AZURE_KEYVAULT_URL / AZURE_TENANT_ID / AZURE_CLIENT_ID / AZURE_CLIENT_SECRET
 ```
 
+## Authentication
+
+แอพเป็น OAuth2 Authorization Server ของตัวเอง (เก็บข้อมูลใน MongoDB ด้วย native driver)
+
+- **OAuth2 Authorization Code + PKCE (S256)** — React UI เป็น public client `keyvault-web`
+- **Password** — hash ด้วย argon2id
+- **Passkey (WebAuthn)** — ใช้ fido2-lib แบบ discoverable credential (sign-in โดยไม่ต้องพิมพ์ username)
+- **Token แบบ opaque** — access token (15 นาที) + refresh token (30 วัน, rotation + reuse detection) เก็บใน Mongo เป็น SHA-256 hash เท่านั้น
+
+Flow: UI → `GET /oauth/authorize` → redirect ไป `/login?request_id=…` → login ด้วย password หรือ passkey → redirect กลับ `/callback?code=…` → UI แลก code ที่ `POST /oauth/token` ด้วย `code_verifier`
+
+เพิ่ม passkey ได้จากปุ่ม "Add passkey" หลัง login (ทดสอบบน Chrome ได้ด้วย DevTools → More tools → WebAuthn → virtual authenticator)
+
+ตั้งค่าใน `.env`: `MONGO_URL`, `MONGO_DB`, `WEBAUTHN_RP_ID`, `WEBAUTHN_ORIGINS`, `OAUTH_CLIENT_ID`, `OAUTH_REDIRECT_URIS`, `ACCESS_TOKEN_TTL`, `REFRESH_TOKEN_TTL` (ดู `.env.example`)
+— `WEBAUTHN_ORIGINS` และ `OAUTH_REDIRECT_URIS` ต้องตรงกับ origin ที่เปิด UI จริง (dev: `:5173`, build: port ของ API)
+
 ## Endpoint
 
 - `GET /health`
+- `GET /oauth/authorize` · `POST /oauth/token` · `POST /oauth/revoke` · `GET /oauth/userinfo` (Bearer)
+- `POST /auth/register` · `POST /auth/login/password`
+- `POST /auth/webauthn/login/options` · `POST /auth/webauthn/login/verify`
+- `POST /auth/webauthn/register/options` · `POST /auth/webauthn/register/verify` · `GET/DELETE /auth/webauthn/credentials` (Bearer)
+
+Secrets (ต้องมี Bearer token):
+
 - `GET /secrets` (list ชื่อ + วันที่ ไม่มี value)
 - `GET /secrets/:name`
 - `PUT /secrets/:name` body: `{ "value": "..." }`

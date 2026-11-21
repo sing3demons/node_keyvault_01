@@ -422,3 +422,62 @@ label {
     display: none;
   }
 }
+
+/* auth */
+.user-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.user-name {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+.auth-wrap {
+  max-width: 420px;
+  padding-top: 72px;
+}
+.auth-brand {
+  margin-bottom: 20px;
+}
+.auth-card input {
+  width: 100%;
+}
+.auth-submit {
+  justify-content: center;
+  width: 100%;
+}
+.tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+.tabs button {
+  flex: 1;
+  justify-content: center;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 600;
+  border-bottom: 2px solid transparent;
+}
+.tabs button.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  background: var(--surface);
+}
+.auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.auth-divider::before,
+.auth-divider::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}

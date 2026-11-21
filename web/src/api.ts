@@ -1,3 +1,5 @@
+import { authFetch } from "./auth";
+
 export interface SecretSummary {
   name: string;
   enabled: boolean;
@@ -5,8 +7,14 @@ export interface SecretSummary {
   updatedOn?: string;
 }
 
+export interface UserInfo {
+  sub: string;
+  username: string;
+  scope: string;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(path, {
+  const response = await authFetch(path, {
     ...init,
     headers: init?.body ? { "Content-Type": "application/json" } : undefined
   });
@@ -20,7 +28,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 const path = (name: string) => `/secrets/${encodeURIComponent(name)}`;
 
 export const api = {
-  health: () => request<{ status: string; provider: string }>("/health"),
+  health: async () => (await fetch("/health")).json() as Promise<{ status: string; provider: string }>,
+  me: () => request<UserInfo>("/oauth/userinfo"),
   list: async () => (await request<{ secrets: SecretSummary[] }>("/secrets")).secrets,
   get: async (name: string) => (await request<{ value: string }>(path(name))).value,
   set: (name: string, value: string) => request<null>(path(name), { method: "PUT", body: JSON.stringify({ value }) }),

@@ -14,7 +14,9 @@ export default defineConfig({
     port: 5173,
     proxy: {
       "/secrets": apiTarget,
-      "/health": apiTarget
+      "/health": apiTarget,
+      "/oauth": apiTarget,
+      "/auth": apiTarget
     }
   }
 });

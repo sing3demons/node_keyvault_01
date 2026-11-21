@@ -1,4 +1,17 @@
 services:
+  mongo:
+    image: mongo:8
+    container_name: keyvault-mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
   # Azure Key Vault emulator (https://github.com/nagyesta/lowkey-vault)
   keyvault:
     image: nagyesta/lowkey-vault:7.3.145
@@ -33,8 +46,14 @@ services:
       IDENTITY_HEADER: header
       # emulator uses a self-signed certificate (local dev only!)
       NODE_TLS_REJECT_UNAUTHORIZED: "0"
+      MONGO_URL: mongodb://mongo:27017
     ports:
       - "${PORT:-3000}:${PORT:-3000}"
     depends_on:
       keyvault:
         condition: service_healthy
+      mongo:
+        condition: service_healthy
+
+volumes:
+  mongo-data:
