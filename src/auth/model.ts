@@ -283,6 +283,8 @@ export interface OAuthClient {
   idTokenTtlSec: number;
   /** How emails sent for this client verify the user: 6-digit code or link. */
   emailVerification: EmailVerificationMethod;
+  /** Sender of this client's emails ("Name <address>"); the server's MAIL_FROM when unset. */
+  mailFrom?: string;
   createdAt: Date;
   updatedAt: Date;
 }

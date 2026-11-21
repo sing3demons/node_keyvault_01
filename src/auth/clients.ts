@@ -6,6 +6,7 @@ import { randomToken, sha256 } from "../shared/crypto.js";
 import { HttpError } from "../shared/http.js";
 import { MASTER_CLIENT_ID, type ClientGrantType, type EmailVerificationMethod, type OAuthClient, type TokenEndpointAuthMethod } from "./model.js";
 import { OAuthError } from "./oauth.js";
+import { isValidSender } from "../shared/mail.js";
 import { DuplicateKeyError, type AuthRepository } from "./repository.js";
 import type { ClientMetadataBody } from "./schemas.js";
 
@@ -15,6 +16,8 @@ export interface ClientLimits {
   /** ID Tokens must not outlive a retired signing key's stay in the JWKS (OIDC_RETIRED_KEY_GRACE_SEC). */
   maxIdTokenTtlSec: number;
   supportedScopes: ReadonlySet<string>;
+  /** MAIL_FROM: sender for clients without their own mail_from. */
+  defaultMailFrom: string;
 }
 
 /** Client as the management API shows it: RFC 7591 metadata names, plus this server's extensions. */
@@ -38,6 +41,8 @@ export interface ClientMetadata {
   refresh_token_lifetime: number;
   id_token_lifetime: number;
   email_verification: EmailVerificationMethod;
+  /** Only when the client has its own sender (else the server's MAIL_FROM is used). */
+  mail_from?: string;
   updated_at: number;
 }
 
@@ -70,6 +75,7 @@ export function toClientMetadata(c: OAuthClient, secret?: string): ClientMetadat
     refresh_token_lifetime: c.refreshTokenTtlSec,
     id_token_lifetime: c.idTokenTtlSec,
     email_verification: c.emailVerification,
+    ...(c.mailFrom !== undefined ? { mail_from: c.mailFrom } : {}),
     updated_at: epoch(c.updatedAt)
   };
 }
@@ -84,6 +90,11 @@ export class ClientService {
 
   async list(): Promise<ClientMetadata[]> {
     return (await this.repo.clients.list()).map((c) => toClientMetadata(c));
+  }
+
+  /** Sender used when a client has no mail_from (shown in the UI as the default). */
+  get defaultMailFrom(): string {
+    return this.limits.defaultMailFrom;
   }
 
   async get(id: string): Promise<ClientMetadata> {
@@ -225,6 +236,10 @@ export class ClientService {
     for (const uri of m.redirect_uris) this.assertRedirectUri(uri);
     if (m.initiate_login_uri !== undefined) this.assertWebUri(m.initiate_login_uri, "initiate_login_uri");
     if (m.client_uri !== undefined) this.assertWebUri(m.client_uri, "client_uri");
+    const mailFrom = m.mail_from?.trim() || undefined;
+    if (mailFrom !== undefined && !isValidSender(mailFrom)) {
+      throw invalid('mail_from must be "Name <address@domain>" or "address@domain"');
+    }
 
     // RFC 7591 §2: grant_types defaults to authorization_code; refresh only makes sense alongside it
     const grantTypes = [...new Set<ClientGrantType>(m.grant_types ?? ["authorization_code"])];
@@ -263,7 +278,8 @@ export class ClientService {
       accessTokenTtlSec: m.access_token_lifetime ?? d.accessTokenTtlSec,
       refreshTokenTtlSec: m.refresh_token_lifetime ?? d.refreshTokenTtlSec,
       idTokenTtlSec: idTtl,
-      emailVerification: m.email_verification ?? "code"
+      emailVerification: m.email_verification ?? "code",
+      ...(mailFrom !== undefined ? { mailFrom } : {})
     };
   }
 

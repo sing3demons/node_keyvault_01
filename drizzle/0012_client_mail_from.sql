@@ -1,0 +1,1 @@
+ALTER TABLE "oauth_clients" ADD COLUMN "mail_from" text;

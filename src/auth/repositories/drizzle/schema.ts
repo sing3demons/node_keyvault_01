@@ -150,6 +150,7 @@ export const oauthClients = pgTable("oauth_clients", {
   refreshTokenTtlSec: integer("refresh_token_ttl_sec").notNull(),
   idTokenTtlSec: integer("id_token_ttl_sec").notNull(),
   emailVerification: text("email_verification", { enum: EMAIL_VERIFICATION_METHODS }).notNull(),
+  mailFrom: text("mail_from"),
   createdAt: ts("created_at").notNull(),
   updatedAt: ts("updated_at").notNull()
 });

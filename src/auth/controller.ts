@@ -206,7 +206,7 @@ export class AuthController {
 
   /** GET /admin/clients */
   async listClients(c: Context<AuthEnv>) {
-    return c.json({ clients: await this.clients.list() });
+    return c.json({ clients: await this.clients.list(), default_mail_from: this.clients.defaultMailFrom });
   }
 
   /** GET /admin/clients/:id */

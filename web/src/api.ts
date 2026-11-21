@@ -87,6 +87,8 @@ export interface OAuthClient {
   refresh_token_lifetime: number;
   id_token_lifetime: number;
   email_verification: "code" | "link";
+  /** Own sender of this client's emails; absent = the server's MAIL_FROM. */
+  mail_from?: string;
   updated_at: number;
 }
 
@@ -144,7 +146,8 @@ export interface ClientsApi {
   removeOwner(username: string): Promise<OwnersView>;
   disableMaster(): Promise<OwnersView>;
   enableMaster(): Promise<OwnersView>;
-  list(): Promise<OAuthClient[]>;
+  /** Clients, plus the server's default sender (MAIL_FROM) for those without mail_from. */
+  list(): Promise<{ clients: OAuthClient[]; defaultMailFrom: string }>;
   create(input: OAuthClientInput): Promise<OAuthClient>;
   update(id: string, input: OAuthClientInput): Promise<OAuthClient>;
   rotateSecret(id: string): Promise<OAuthClient>;
@@ -160,7 +163,10 @@ function clientsApi(send: <T>(path: string, init?: RequestInit) => Promise<T>): 
     removeOwner: (u) => send<OwnersView>(owner(u), { method: "DELETE" }),
     disableMaster: () => send<OwnersView>("/admin/client-owners/master/disable", { method: "POST" }),
     enableMaster: () => send<OwnersView>("/admin/client-owners/master/enable", { method: "POST" }),
-    list: async () => (await send<{ clients: OAuthClient[] }>("/admin/clients")).clients,
+    list: async () => {
+      const r = await send<{ clients: OAuthClient[]; default_mail_from: string }>("/admin/clients");
+      return { clients: r.clients, defaultMailFrom: r.default_mail_from };
+    },
     create: (input) => send<OAuthClient>("/admin/clients", { method: "POST", body: JSON.stringify(input) }),
     update: (id, input) => send<OAuthClient>(one(id), { method: "PUT", body: JSON.stringify(input) }),
     rotateSecret: (id) => send<OAuthClient>(`${one(id)}/secret`, { method: "POST" }),
@@ -219,7 +225,7 @@ export function masterClientsApi(token: string, onUnauthorized: () => void): Cli
 }
 
 export const api = {
-  health: async () => (await fetch("/health")).json() as Promise<{ status: string; provider: string }>,
+  health: async () => (await fetch("/health")).json() as Promise<{ status: string; provider?: string }>,
   me: () => request<Account>("/auth/me"),
   updateAccount: (update: AccountUpdate) =>
     request<Account>("/auth/me", { method: "PATCH", body: JSON.stringify(update) }),

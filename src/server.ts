@@ -56,7 +56,8 @@ async function main() {
   const clients = new ClientService(authRepo, {
     defaults: config.clientDefaults,
     maxIdTokenTtlSec: config.oidc.retiredKeyGraceSec,
-    supportedScopes: SUPPORTED_SCOPES
+    supportedScopes: SUPPORTED_SCOPES,
+    defaultMailFrom: config.mail.from
   });
   await clients.seed({
     id: config.defaultClient.id,
@@ -87,7 +88,10 @@ async function main() {
     authRepo,
     createMailer(config.mail),
     { ...config.emailCodes, appName: config.webauthn.rpName },
-    async (clientId) => (await clients.find(clientId))?.name
+    async (clientId) => {
+      const c = await clients.find(clientId);
+      return c ? { name: c.name, ...(c.mailFrom ? { mailFrom: c.mailFrom } : {}) } : undefined;
+    }
   );
   const authService = new AuthService(
     authRepo,
@@ -109,7 +113,8 @@ async function main() {
   app.onError(errorHandler);
   app.notFound(notFoundHandler);
 
-  app.get("/health", (c) => c.json({ status: "ok" }));
+  // public: says which secret store backs the API (shown in the UI header), nothing more
+  app.get("/health", (c) => c.json({ status: "ok", provider: "Azure Key Vault" }));
 
   // --- OpenID Connect discovery
   app.get("/.well-known/openid-configuration", (c) => auth.openidConfiguration(c));

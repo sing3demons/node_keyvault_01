@@ -62,8 +62,8 @@ export class EmailCodeService {
     private readonly repo: AuthRepository,
     private readonly mailer: Mailer,
     private readonly settings: EmailCodeSettings,
-    /** client_name for emails sent on behalf of a client. */
-    private readonly clientName: (clientId: string) => Promise<string | undefined>
+    /** Name (and own sender, if any) for emails sent on behalf of a client. */
+    private readonly clientInfo: (clientId: string) => Promise<{ name: string; mailFrom?: string } | undefined>
   ) {}
 
   /** Creates a challenge and emails its code / link. */
@@ -275,7 +275,8 @@ export class EmailCodeService {
   /** Sends the code / link. If the very first send fails the challenge is removed, since nobody can complete it. */
   private async deliver(c: EmailChallenge, secret: string, first: boolean, mail: MailContext): Promise<void> {
     const { ttlSec } = this.settings;
-    const baseName = (c.clientId && (await this.clientName(c.clientId).catch(() => undefined))) || this.settings.appName;
+    const client = c.clientId ? await this.clientInfo(c.clientId).catch(() => undefined) : undefined;
+    const baseName = client?.name || this.settings.appName;
     const appName = c.purpose === "master" ? `${baseName} master` : baseName;
     const minutes = Math.round(ttlSec / 60);
     const expires = `It expires in ${minutes} minute${minutes === 1 ? "" : "s"}.`;
@@ -312,7 +313,7 @@ export class EmailCodeService {
         `<p>Enter it to ${action}. ${expires}</p><p style="color:#666">${ignore}</p>`;
     }
     try {
-      await this.mailer.send({ to: c.email, subject, text, html });
+      await this.mailer.send({ ...(client?.mailFrom ? { from: client.mailFrom } : {}), to: c.email, subject, text, html });
     } catch (error) {
       console.error("sending email failed", errorMessage(error));
       if (first) await this.repo.emailChallenges.consume(c.id).catch(() => {});

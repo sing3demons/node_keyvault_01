@@ -1089,6 +1089,7 @@ export function ClientsPanel({
 /** List / create / edit / rotate / delete clients, through `clientsApi` (owner or master credential). */
 function ClientList({ clientsApi, onClose }: { clientsApi: ClientsApi; onClose?: () => void }) {
   const [clients, setClients] = useState<OAuthClient[] | null>(null);
+  const [defaultMailFrom, setDefaultMailFrom] = useState("");
   const [editing, setEditing] = useState<OAuthClient | "new" | null>(null);
   /** Secret just issued: shown once. */
   const [secret, setSecret] = useState<{ clientId: string; value: string } | null>(null);
@@ -1098,7 +1099,10 @@ function ClientList({ clientsApi, onClose }: { clientsApi: ClientsApi; onClose?:
   const load = () =>
     clientsApi
       .list()
-      .then(setClients)
+      .then((r) => {
+        setClients(r.clients);
+        setDefaultMailFrom(r.defaultMailFrom);
+      })
       .catch((e: Error) => setError(e.message));
 
   useEffect(() => {
@@ -1129,6 +1133,7 @@ function ClientList({ clientsApi, onClose }: { clientsApi: ClientsApi; onClose?:
       <ClientForm
         client={editing === "new" ? null : editing}
         clientsApi={clientsApi}
+        defaultMailFrom={defaultMailFrom}
         onCancel={() => setEditing(null)}
         onSaved={saved}
       />
@@ -1172,6 +1177,12 @@ function ClientList({ clientsApi, onClose }: { clientsApi: ClientsApi; onClose?:
                   </div>
                   <div className="hint mono">{c.client_id}</div>
                   {c.redirect_uris.length > 0 && <div className="hint">{c.redirect_uris.join(" · ")}</div>}
+                  {c.grant_types.includes("authorization_code") && (
+                    <div className="hint">
+                      Emails from {c.mail_from ?? defaultMailFrom}
+                      {!c.mail_from && " (server default)"}
+                    </div>
+                  )}
                 </div>
                 <div className="device-actions">
                   <button className="btn-ghost" disabled={busy} onClick={() => setEditing(c)} title="Edit">
@@ -1228,11 +1239,14 @@ function ClientList({ clientsApi, onClose }: { clientsApi: ClientsApi; onClose?:
 function ClientForm({
   client,
   clientsApi,
+  defaultMailFrom,
   onCancel,
   onSaved
 }: {
   client: OAuthClient | null;
   clientsApi: ClientsApi;
+  /** MAIL_FROM, used when the sender field is left empty. */
+  defaultMailFrom: string;
   onCancel: () => void;
   onSaved: (c: OAuthClient) => void;
 }) {
@@ -1255,6 +1269,7 @@ function ClientForm({
   const [initiate, setInitiate] = useState(start.initiate_login_uri ?? "");
   const [homepage, setHomepage] = useState(start.client_uri ?? "");
   const [emailMethod, setEmailMethod] = useState(start.email_verification);
+  const [mailFrom, setMailFrom] = useState(start.mail_from ?? "");
   const [accessTtl, setAccessTtl] = useState(String(start.access_token_lifetime));
   const [refreshTtl, setRefreshTtl] = useState(String(start.refresh_token_lifetime));
   const [idTtl, setIdTtl] = useState(String(start.id_token_lifetime));
@@ -1285,7 +1300,8 @@ function ClientForm({
       access_token_lifetime: Number(accessTtl),
       refresh_token_lifetime: Number(refreshTtl),
       id_token_lifetime: Number(idTtl),
-      email_verification: emailMethod
+      email_verification: emailMethod,
+      ...(mailFrom.trim() ? { mail_from: mailFrom.trim() } : {})
     };
     try {
       onSaved(client ? await clientsApi.update(client.client_id, input) : await clientsApi.create(input));
@@ -1378,6 +1394,14 @@ function ClientForm({
             <option value="code">6-digit code (OTP)</option>
             <option value="link">Link</option>
           </select>
+        </label>
+        <label>
+          Sender email (From)
+          <input value={mailFrom} onChange={(e) => setMailFrom(e.target.value)} placeholder={defaultMailFrom} maxLength={200} />
+          <span className="hint">
+            "Name &lt;address@domain&gt;" or an address. Empty = server default ({defaultMailFrom}). Your SMTP server must be
+            allowed to send from this address.
+          </span>
         </label>
         <label>
           Initiate login URI

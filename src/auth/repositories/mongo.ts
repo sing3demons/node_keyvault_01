@@ -286,7 +286,7 @@ export class MongoAuthRepository implements AuthRepository {
     update: async (c: OAuthClient) => {
       const { _id, createdAt: _createdAt, ...rest } = toDoc(c);
       const $unset: Record<string, ""> = {};
-      for (const k of ["secretHash", "clientUri", "initiateLoginUri"] as const) if (c[k] === undefined) $unset[k] = "";
+      for (const k of ["secretHash", "clientUri", "initiateLoginUri", "mailFrom"] as const) if (c[k] === undefined) $unset[k] = "";
       const res = await this.clients$.updateOne(
         { _id },
         { $set: rest, ...(Object.keys($unset).length ? { $unset } : {}) } as never

@@ -16,7 +16,7 @@ import {
 } from "./components";
 import { LockIcon, PlusIcon, RefreshIcon, SearchIcon, UsersIcon } from "./icons";
 
-type Health = { state: "loading" } | { state: "ok"; provider: string } | { state: "error" };
+type Health = { state: "loading" } | { state: "ok"; provider?: string } | { state: "error" };
 
 export function App() {
   const [secrets, setSecrets] = useState<SecretSummary[]>([]);
@@ -119,7 +119,7 @@ export function App() {
         </div>
         <div className="status">
           <span className={`dot ${health.state === "ok" ? "ok" : health.state === "error" ? "err" : ""}`} />
-          {health.state === "ok" ? `Connected · ${health.provider}` : health.state === "error" ? "API unreachable" : "Connecting…"}
+          {health.state === "ok" ? (health.provider ? `Connected · ${health.provider}` : "Connected") : health.state === "error" ? "API unreachable" : "Connecting…"}
         </div>
         <div className="user-bar">
           {(account || identity) && (

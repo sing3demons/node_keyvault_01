@@ -85,6 +85,13 @@
       "when": 1795277410856,
       "tag": "0011_master_email_verification",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1795280278705,
+      "tag": "0012_client_mail_from",
+      "breakpoints": true
     }
   ]
 }

@@ -332,7 +332,7 @@ export class DrizzleAuthRepository implements AuthRepository {
       const { id, createdAt: _createdAt, ...rest } = c;
       const rows = await this.db
         .update(oauthClients)
-        .set({ ...rest, secretHash: c.secretHash ?? null, clientUri: c.clientUri ?? null, initiateLoginUri: c.initiateLoginUri ?? null })
+        .set({ ...rest, secretHash: c.secretHash ?? null, clientUri: c.clientUri ?? null, initiateLoginUri: c.initiateLoginUri ?? null, mailFrom: c.mailFrom ?? null })
         .where(eq(oauthClients.id, id))
         .returning({ id: oauthClients.id });
       return rows.length > 0;

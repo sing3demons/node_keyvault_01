@@ -180,7 +180,9 @@ export const clientMetadataBody = z.object({
   access_token_lifetime: seconds(60, 86_400).optional(),
   refresh_token_lifetime: seconds(300, 31_536_000).optional(),
   id_token_lifetime: seconds(60, 86_400).optional(),
-  email_verification: z.enum(EMAIL_VERIFICATION_METHODS).optional()
+  email_verification: z.enum(EMAIL_VERIFICATION_METHODS).optional(),
+  /** Sender of this client's emails: "Name <address>" or an address; omitted = the server's MAIL_FROM. */
+  mail_from: z.string().trim().max(200).optional()
 });
 
 export const clientIdParam = z.object({ id: z.string().min(1).max(64) });

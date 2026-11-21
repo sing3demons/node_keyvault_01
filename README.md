@@ -101,7 +101,7 @@ type Credential =
 
 - metadata ตาม RFC 7591: `client_id`, `client_name`, `redirect_uris` (ตรงทุกตัวอักษร; https, http เฉพาะ localhost, หรือ private-use scheme แบบ `com.example.app:/cb` ตาม RFC 8252), `token_endpoint_auth_method`, `grant_types`, `scope`, `client_uri`, `initiate_login_uri` (OIDC)
 - ชนิด client: `none` = public (SPA / mobile, ใช้ PKCE อย่างเดียว) · `client_secret_basic` (default ตาม RFC 7591) / `client_secret_post` = confidential — secret แสดงครั้งเดียวตอนสร้าง/rotate, DB เก็บแค่ SHA-256
-- ตั้งค่าต่อ client (แทน env เดิม): `access_token_lifetime`, `refresh_token_lifetime`, `id_token_lifetime` (ไม่เกิน `OIDC_RETIRED_KEY_GRACE_SEC`), `email_verification` (`code` | `link`); refresh token ออกให้เฉพาะ client ที่มี grant `refresh_token`; scope ที่ขอต้องอยู่ใน `scope` ของ client (ไม่ส่ง scope = ใช้ของ client)
+- ตั้งค่าต่อ client (แทน env เดิม): `access_token_lifetime`, `refresh_token_lifetime`, `id_token_lifetime` (ไม่เกิน `OIDC_RETIRED_KEY_GRACE_SEC`), `email_verification` (`code` | `link`), `mail_from` (ผู้ส่ง email ของ client นี้ เช่น `Billing <no-reply@billing.example.com>`; ไม่ใส่ = `MAIL_FROM` ของ server — SMTP ต้องยอมให้ส่งจาก address นั้น); refresh token ออกให้เฉพาะ client ที่มี grant `refresh_token`; scope ที่ขอต้องอยู่ใน `scope` ของ client (ไม่ส่ง scope = ใช้ของ client)
 - `/oauth/token` และ `/oauth/revoke` ต้องยืนยันตัว client ตามวิธีที่ลงทะเบียน (RFC 6749 §2.3, RFC 7009); revoke ได้เฉพาะ token ของตัวเอง
 - **`client_credentials`** (RFC 6749 §4.4, machine-to-machine): เฉพาะ confidential client, ไม่ต้องมี redirect URI; token ได้เฉพาะ API scope (ตัด `openid`/`profile`/`email` ออก), ไม่มี refresh / ID token, ไม่มี user — endpoint ที่ต้องการ user (`/secrets`, `/auth/me`, `/oauth/userinfo`) ตอบ 403
   ```bash
