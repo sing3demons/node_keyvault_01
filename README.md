@@ -161,7 +161,7 @@ type Credential =
 
 `model.ts` (type), `repository.ts` (interface ของ storage), `schemas.ts` (zod) และ `repositories/` ใช้ร่วมกันทุกโฟลเดอร์ — `src/server.ts` แค่ประกอบ storage + โมดูล + routes
 
-โค้ด auth ทั้งหมดคุยผ่าน `AuthRepository` ([src/auth/repository.ts](src/auth/repository.ts)) — เพิ่ม DB ใหม่ได้โดย implement interface นี้ใน `src/auth/repositories/` แล้วเพิ่มใน `createAuthRepository()`
+โค้ด auth ทั้งหมดคุยผ่าน `AuthRepository` ([src/auth/repository.ts](src/auth/repository.ts)) — แต่ละ DB แยกไฟล์ตามข้อมูล (`users`, `oauth` = auth request / code / token, `challenges`, `devices`, `clients`, `settings`) ใน `src/auth/repositories/mongo/` และ `src/auth/repositories/drizzle/` แล้ว `index.ts` ประกอบเป็น `AuthRepository`; เพิ่ม DB ใหม่ได้โดยทำโฟลเดอร์แบบเดียวกันแล้วเพิ่มใน `createAuthRepository()`
 
 แก้ schema Postgres ที่ `src/auth/repositories/drizzle/schema.ts` แล้วรัน `pnpm db:generate` เพื่อสร้าง migration ใหม่ (`pnpm db:studio` เปิด Drizzle Studio)
 

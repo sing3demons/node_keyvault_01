@@ -14,7 +14,7 @@ export interface AuthDbSettings {
 export async function createAuthRepository(s: AuthDbSettings): Promise<AuthRepository> {
   switch (s.driver) {
     case "mongo": {
-      const { MongoAuthRepository } = await import("./mongo.js");
+      const { MongoAuthRepository } = await import("./mongo/index.js");
       return MongoAuthRepository.connect(s.mongoUrl, s.mongoDb);
     }
     case "postgres": {
