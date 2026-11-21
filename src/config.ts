@@ -36,8 +36,13 @@ class Config {
 
   oidc: {
     issuer: string;
-    privateKeyPem?: string;
     idTokenTtlSec: number;
+    /** Key Vault secret holding the signing key set (hidden from the /secrets API). */
+    keysSecretName: string;
+    keyRotationDays: number;
+    retiredKeyGraceSec: number;
+    /** How often each instance reloads the key set (and rotates if due). */
+    keysSyncSec: number;
   };
 
   constructor() {
@@ -75,9 +80,11 @@ class Config {
 
     this.oidc = {
       issuer: process.env.OIDC_ISSUER ?? `http://localhost:${this.port}`,
-      // PEM in an env var usually arrives with literal "\n"
-      privateKeyPem: process.env.OIDC_PRIVATE_KEY?.replace(/\\n/g, "\n"),
-      idTokenTtlSec: Number(process.env.ID_TOKEN_TTL ?? 900)
+      idTokenTtlSec: Number(process.env.ID_TOKEN_TTL ?? 900),
+      keysSecretName: process.env.OIDC_KEYS_SECRET ?? "oidc-signing-keys",
+      keyRotationDays: Number(process.env.OIDC_KEY_ROTATION_DAYS ?? 30),
+      retiredKeyGraceSec: Number(process.env.OIDC_RETIRED_KEY_GRACE_SEC ?? 24 * 60 * 60),
+      keysSyncSec: Number(process.env.OIDC_KEYS_SYNC_SEC ?? 300)
     };
   }
 }

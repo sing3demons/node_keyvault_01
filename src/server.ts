@@ -5,10 +5,10 @@ import { config } from "./config.js";
 import { errorHandler, notFoundHandler } from "./shared/http.js";
 import { KeyVaultService } from "./keyvault/service.js";
 import { KeyVaultController } from "./keyvault/controller.js";
-import { AzureKeyVaultSecretStore } from "./keyvault/store.js";
+import { AzureKeyVaultSecretStore, NamedSecret } from "./keyvault/store.js";
 import { createAuthRepository } from "./auth/repositories/index.js";
 import { AuthService } from "./auth/service.js";
-import { IdTokenIssuer } from "./auth/oidc.js";
+import { IdTokenIssuer, SigningKeyRing } from "./auth/oidc.js";
 import { Argon2idHasher, SecretHasher } from "./shared/hashing.js";
 import { WebAuthnService } from "./auth/webauthn.js";
 import { AuthController } from "./auth/controller.js";
@@ -17,7 +17,7 @@ import { requireAuth, type AuthEnv } from "./shared/middleware.js";
 async function main() {
   const azureVaultUrl: string = process.env.AZURE_KEYVAULT_URL as string;
   const keyVaultSecretStore = new AzureKeyVaultSecretStore(azureVaultUrl);
-  const keyVaultSecret = new KeyVaultService(keyVaultSecretStore);
+  const keyVaultSecret = new KeyVaultService(keyVaultSecretStore, [config.oidc.keysSecretName]);
   const keyVaultHandler = new KeyVaultController(keyVaultSecret);
 
   const authRepo = await createAuthRepository({
@@ -28,9 +28,10 @@ async function main() {
     migrationsFolder: config.migrationsFolder
   });
   await authRepo.init();
-  // RDBs have no TTL index: sweep expired codes/tokens/challenges periodically
-  setInterval(() => authRepo.purgeExpired(new Date()).catch((e) => console.error("purgeExpired failed", e)), 10 * 60_000).unref();
-  const idTokens = await IdTokenIssuer.create(config.oidc);
+  // OIDC signing keys live in Key Vault
+  const signingKeys = new SigningKeyRing(new NamedSecret(keyVaultSecretStore, config.oidc.keysSecretName), config.oidc);
+  await signingKeys.init();
+  const idTokens = new IdTokenIssuer(config.oidc, signingKeys);
   const authService = new AuthService(authRepo, new SecretHasher(new Argon2idHasher()), config.oauth, idTokens);
   const webAuthnService = new WebAuthnService(authRepo, config.webauthn);
   const auth = new AuthController(authService, webAuthnService, idTokens);

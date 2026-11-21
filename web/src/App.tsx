@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { api, type Account, type SecretSummary } from "./api";
-import { addPasskey, logout, passkeysSupported, startLogin } from "./auth";
+import { addPasskey, getIdentity, logout, onIdentityChange, passkeysSupported, refresh, startLogin } from "./auth";
 import { AccountDialog, DeleteDialog, EditDialog, SecretRow, Toasts, type Toast } from "./components";
 import { LockIcon, PlusIcon, RefreshIcon, SearchIcon } from "./icons";
 
@@ -16,6 +16,12 @@ export function App() {
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [account, setAccount] = useState<Account | null>(null);
   const [accountOpen, setAccountOpen] = useState(false);
+  // from the ID Token: shown right away, before /auth/me answers
+  const identity = useSyncExternalStore(onIdentityChange, getIdentity);
+  const shownName = account?.displayProfile
+    ? `${account.displayProfile.firstName} ${account.displayProfile.lastName}`
+    : (identity?.name ?? `@${account?.username ?? identity?.preferredUsername ?? ""}`);
+  const username = account?.username ?? identity?.preferredUsername;
   const searchRef = useRef<HTMLInputElement>(null);
 
   const toast = useCallback((message: string, error = false) => {
@@ -99,11 +105,14 @@ export function App() {
           {health.state === "ok" ? `Connected · ${health.provider}` : health.state === "error" ? "API unreachable" : "Connecting…"}
         </div>
         <div className="user-bar">
-          {account && (
-            <button className="btn-ghost" onClick={() => setAccountOpen(true)} title={`@${account.username}`}>
-              {account.displayProfile
-                ? `${account.displayProfile.firstName} ${account.displayProfile.lastName}`
-                : `@${account.username}`}
+          {(account || identity) && (
+            <button
+              className="btn-ghost"
+              onClick={() => setAccountOpen(true)}
+              disabled={!account}
+              title={username ? `@${username}` : undefined}
+            >
+              {shownName}
             </button>
           )}
           {passkeysSupported() && (
@@ -212,6 +221,7 @@ export function App() {
         onSaved={(updated) => {
           setAccount(updated);
           setAccountOpen(false);
+          refresh(); // new ID Token carrying the updated name / language
           toast("Account updated");
         }}
       />

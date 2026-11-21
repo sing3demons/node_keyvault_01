@@ -68,7 +68,12 @@ pnpm dev                        # API :3000 + UI (Vite) http://localhost:5173
 - ขอ scope `openid` (เพิ่ม `profile`, `email` ได้) แล้ว `/oauth/token` จะคืน `id_token` (JWT, RS256) มาด้วย ทั้งตอนแลก code และตอน refresh
 - claim: `iss`, `sub`, `aud`, `exp`, `iat`, `auth_time`, `nonce` (ส่งมาตอน `/oauth/authorize`), `at_hash` และตาม scope — `profile`: `name`, `given_name`, `family_name`, `locale`, `preferred_username`, ชื่อแยกภาษา `given_name#th`; `email`: `email`, `email_verified`
 - client ตรวจลายเซ็นด้วย `GET /.well-known/jwks.json` (หาได้จาก `GET /.well-known/openid-configuration`)
-- ตั้ง `OIDC_ISSUER` และ `OIDC_PRIVATE_KEY` ใน production (ดู `.env.example`) — ถ้าไม่ตั้ง key จะสร้างใหม่ทุกครั้งที่ start
+- ตั้ง `OIDC_ISSUER` เป็น URL จริงใน production (ดู `.env.example`)
+- **Signing key rotation** — key เก็บใน Key Vault (secret `oidc-signing-keys`, ตั้งชื่อได้ด้วย `OIDC_KEYS_SECRET`)
+  - start ครั้งแรกสร้าง key ให้เอง; key `active` ใช้เซ็น, key `retired` ไม่เซ็นแล้วแต่ยังอยู่ใน JWKS จนหมด `OIDC_RETIRED_KEY_GRACE_SEC` (private key ถูกลบทันทีที่ retire)
+  - rotate อัตโนมัติเมื่อ key อายุครบ `OIDC_KEY_ROTATION_DAYS` (30 วัน) หรือสั่งเองด้วย `pnpm oidc:rotate` (image: `node dist/cli/rotate-oidc-key.js`)
+  - ทุก instance โหลด key จาก Key Vault ใหม่ทุก `OIDC_KEYS_SYNC_SEC` (5 นาที)
+  - secret นี้ถูกซ่อนจาก `/secrets` และอ่าน/เขียน/ลบผ่าน API ไม่ได้ (403)
 - `/oauth/userinfo` คืน claim ตาม scope ของ access token เหมือนกัน
 
 **User model**

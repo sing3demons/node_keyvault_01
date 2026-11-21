@@ -62,3 +62,27 @@ export class AzureKeyVaultSecretStore implements ISecretStore {
     await poller.pollUntilDone();
   }
 }
+
+/**
+ * One secret used as a small document store: `load` returns null when it does not exist yet.
+ * Structurally fits stores like auth's SigningKeyStore without keyvault depending on auth.
+ */
+export class NamedSecret {
+  constructor(
+    private readonly store: ISecretStore,
+    readonly name: string
+  ) {}
+
+  async load(): Promise<string | null> {
+    try {
+      return await this.store.getSecret(this.name);
+    } catch (error) {
+      if ((error as { statusCode?: number }).statusCode === 404) return null;
+      throw error;
+    }
+  }
+
+  async save(value: string): Promise<void> {
+    await this.store.setSecret(this.name, value);
+  }
+}

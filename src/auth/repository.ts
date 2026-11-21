@@ -87,9 +87,11 @@ export interface AuthRepository {
   readonly authCodes: AuthCodeRepository;
   readonly tokens: TokenRepository;
 
-  /** Create indexes / run migrations. */
+  /**
+   * Create indexes / run migrations, and start any background upkeep the backend needs
+   * (e.g. sweeping expired rows where the database has no TTL).
+   */
   init(): Promise<void>;
-  /** Remove expired rows (no-op where the database has native TTL). */
-  purgeExpired(now: Date): Promise<void>;
+  /** Stop background upkeep and disconnect. */
   close(): Promise<void>;
 }

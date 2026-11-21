@@ -17,7 +17,20 @@ interface Tokens {
   accessToken: string;
   refreshToken: string;
   expiresAt: number;
+  /** Latest ID Token (kept when a refresh response has none). */
+  idToken?: string;
 }
+
+/** Who is signed in, from the ID Token's claims (OIDC Core §5.1) — available without an API call. */
+export interface Identity {
+  sub: string;
+  name?: string;
+  preferredUsername?: string;
+  email?: string;
+  locale?: string;
+}
+
+type TokenResponse = { access_token: string; refresh_token: string; expires_in: number; id_token?: string };
 
 // ------------------------------------------------------------------ storage (per-tab)
 
@@ -50,14 +63,65 @@ let tokens: Tokens | null = (() => {
   return raw ? (JSON.parse(raw) as Tokens) : null;
 })();
 
-function saveTokens(t: { access_token: string; refresh_token: string; expires_in: number }) {
-  tokens = { accessToken: t.access_token, refreshToken: t.refresh_token, expiresAt: Date.now() + t.expires_in * 1000 };
+function saveTokens(t: TokenResponse) {
+  tokens = {
+    accessToken: t.access_token,
+    refreshToken: t.refresh_token,
+    expiresAt: Date.now() + t.expires_in * 1000,
+    idToken: t.id_token ?? tokens?.idToken
+  };
   store.set(K.tokens, JSON.stringify(tokens));
+  notifyIdentity();
 }
 
 function clearTokens() {
   tokens = null;
   store.del(K.tokens);
+  notifyIdentity();
+}
+
+// ------------------------------------------------------------------ identity from the ID Token
+
+/** Payload of a JWT, without verifying it (see checkIdToken for why that is fine here). */
+function decodeJwtPayload(jwt: string): Record<string, unknown> {
+  const [, payload] = jwt.split(".");
+  const value: unknown = JSON.parse(new TextDecoder().decode(b64urlToBuf(payload ?? "")));
+  if (typeof value !== "object" || value === null) throw new Error("ID Token payload is not an object");
+  return value as Record<string, unknown>;
+}
+
+const str = (v: unknown): string | undefined => (typeof v === "string" && v ? v : undefined);
+
+let identityCache: { idToken?: string; identity: Identity | null } = { identity: null };
+const identityListeners = new Set<() => void>();
+
+/** Current identity; the same object is returned until the ID Token changes (useSyncExternalStore-safe). */
+export function getIdentity(): Identity | null {
+  const idToken = tokens?.idToken;
+  if (identityCache.idToken !== idToken) {
+    let identity: Identity | null = null;
+    try {
+      const c = idToken ? decodeJwtPayload(idToken) : null;
+      const sub = c && str(c.sub);
+      if (c && sub) {
+        identity = { sub, name: str(c.name), preferredUsername: str(c.preferred_username), email: str(c.email), locale: str(c.locale) };
+      }
+    } catch {
+      identity = null;
+    }
+    identityCache = { idToken, identity };
+  }
+  return identityCache.identity;
+}
+
+/** Subscribe to identity changes (sign-in, refresh with a new ID Token, sign-out). Returns unsubscribe. */
+export function onIdentityChange(listener: () => void): () => void {
+  identityListeners.add(listener);
+  return () => identityListeners.delete(listener);
+}
+
+function notifyIdentity() {
+  for (const listener of identityListeners) listener();
 }
 
 // ------------------------------------------------------------------ base64url
@@ -80,8 +144,18 @@ const randomString = (bytes: number) => bufToB64url(crypto.getRandomValues(new U
 
 // ------------------------------------------------------------------ OAuth flow
 
-/** Redirects the browser to /oauth/authorize with a fresh PKCE pair. */
-export async function startLogin(): Promise<never> {
+let loginRedirect: Promise<never> | null = null;
+
+/**
+ * Redirects the browser to /oauth/authorize with a fresh PKCE pair. Single-flight: parallel callers
+ * (e.g. several API calls failing at once) share one redirect instead of overwriting state/verifier.
+ */
+export function startLogin(): Promise<never> {
+  loginRedirect ??= redirectToAuthorize();
+  return loginRedirect;
+}
+
+async function redirectToAuthorize(): Promise<never> {
   const verifier = randomString(48); // 64 chars
   const challenge = bufToB64url(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(verifier)));
   const state = randomString(16);
@@ -114,7 +188,7 @@ async function tokenRequest(body: Record<string, string>) {
   });
   const json = (await res.json().catch(() => ({}))) as Record<string, string>;
   if (!res.ok) throw new Error(json.error_description ?? json.error ?? `Token request failed (${res.status})`);
-  return json as unknown as { access_token: string; refresh_token: string; expires_in: number; id_token?: string };
+  return json as unknown as TokenResponse;
 }
 
 /**
@@ -124,8 +198,7 @@ async function tokenRequest(body: Record<string, string>) {
  */
 function checkIdToken(idToken: string | undefined, expectedNonce: string | null): void {
   if (!idToken) throw new Error("Sign-in response is missing the ID Token");
-  const [, payload] = idToken.split(".");
-  const claims = JSON.parse(new TextDecoder().decode(b64urlToBuf(payload ?? ""))) as { aud?: string | string[]; nonce?: string };
+  const claims = decodeJwtPayload(idToken);
   const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
   if (!audiences.includes(CLIENT_ID) || !expectedNonce || claims.nonce !== expectedNonce) {
     throw new Error("Invalid sign-in response (ID Token mismatch). Please try again.");

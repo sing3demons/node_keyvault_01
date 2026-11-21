@@ -292,10 +292,6 @@ export class MongoAuthRepository implements AuthRepository {
     }
   }
 
-  async purgeExpired(): Promise<void> {
-    // TTL indexes handle expiry
-  }
-
   async close(): Promise<void> {
     await this.client.close();
   }

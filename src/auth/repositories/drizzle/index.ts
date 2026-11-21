@@ -73,6 +73,10 @@ export class DrizzleAuthRepository implements AuthRepository {
   private static readonly UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   private readonly db: Db;
 
+  /** Postgres has no TTL indexes, so expired rows are swept on this interval once `init()` ran. */
+  private static readonly PURGE_INTERVAL_MS = 10 * 60_000;
+  private purgeTimer?: NodeJS.Timeout;
+
   static connect(connectionString: string, migrationsFolder: string): DrizzleAuthRepository {
     return new DrizzleAuthRepository(new Pool({ connectionString }), migrationsFolder);
   }
@@ -275,9 +279,13 @@ export class DrizzleAuthRepository implements AuthRepository {
 
   async init(): Promise<void> {
     await migrate(this.db, { migrationsFolder: this.migrationsFolder });
+    this.purgeTimer ??= setInterval(
+      () => this.purgeExpired(new Date()).catch((e) => console.error("purgeExpired failed", e)),
+      DrizzleAuthRepository.PURGE_INTERVAL_MS
+    ).unref();
   }
 
-  /** Postgres has no TTL — called periodically by the server. */
+  /** Deletes expired challenges, requests, codes and tokens (run by the timer started in `init()`). */
   async purgeExpired(now: Date): Promise<void> {
     await this.db.transaction(async (tx) => {
       await tx.delete(webauthnChallenges).where(lt(webauthnChallenges.expiresAt, now));
@@ -289,6 +297,8 @@ export class DrizzleAuthRepository implements AuthRepository {
   }
 
   async close(): Promise<void> {
+    clearInterval(this.purgeTimer);
+    this.purgeTimer = undefined;
     await this.pool.end();
   }
 
