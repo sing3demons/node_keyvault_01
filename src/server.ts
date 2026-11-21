@@ -3,10 +3,11 @@ import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { config } from "./config.js";
-import { createSecretStore } from "./secret-store.js";
+import { KeyVaultService } from "./keyvault/service.js";
+import { KeyVaultHandler } from "./keyvault/handle.js";
+import { AzureKeyVaultSecretStore } from "./keyvault/store.js";
 
-const secretStore = createSecretStore();
-
+ 
 function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Unknown error";
 }
@@ -21,37 +22,34 @@ function getErrorStatusCode(error: unknown): ContentfulStatusCode {
   return 500;
 }
 
-const app = new Hono();
 
-app.onError((error, c) => c.json({ message: getErrorMessage(error) }, getErrorStatusCode(error)));
+async function main() {
+  const azureVaultUrl: string = process.env.AZURE_KEYVAULT_URL as string;
+  const keyVaultSecretStore = new AzureKeyVaultSecretStore(azureVaultUrl);
+  const keyVaultSecret = new KeyVaultService(keyVaultSecretStore);
+  const keyVaultHandler = new KeyVaultHandler(keyVaultSecret);
 
-app.get("/health", (c) => c.json({ status: "ok", provider: config.secretProvider }));
+  const app = new Hono();
 
-app.get("/secrets", async (c) => c.json({ secrets: await secretStore.listSecrets() }));
+  app.onError((error, c) => c.json({ message: getErrorMessage(error) }, getErrorStatusCode(error)));
 
-app.get("/secrets/:name", async (c) => {
-  const name = c.req.param("name");
-  return c.json({ name, value: await secretStore.getSecret(name) });
-});
+  app.get("/health", (c) => c.json({ status: "ok", provider: config.secretProvider }));
 
-app.put("/secrets/:name", async (c) => {
-  const body = await c.req.json().catch(() => null);
-  const value = (body as { value?: unknown } | null)?.value;
-  if (typeof value !== "string" || value.length === 0) {
-    return c.json({ message: "Body must include a non-empty string field: value" }, 400);
-  }
-  await secretStore.setSecret(c.req.param("name"), value);
-  return c.body(null, 204);
-});
+  app.get("/secrets", keyVaultHandler.getSecrets.bind(keyVaultHandler));
 
-app.delete("/secrets/:name", async (c) => {
-  await secretStore.deleteSecret(c.req.param("name"));
-  return c.body(null, 204);
-});
+  app.get("/secrets/:name", keyVaultHandler.getSecret.bind(keyVaultHandler));
 
-// React UI (built by `vite build` into dist/public)
-app.use("/*", serveStatic({ root: "./dist/public" }));
+  app.put("/secrets/:name", keyVaultHandler.setSecret.bind(keyVaultHandler));
 
-serve({ fetch: app.fetch, port: config.port }, (info) => {
-  console.log(`Server is running on port ${info.port} with provider=${config.secretProvider}`);
-});
+  app.delete("/secrets/:name", keyVaultHandler.deleteSecret.bind(keyVaultHandler));
+
+  // React UI (built by `vite build` into dist/public)
+  app.use("/*", serveStatic({ root: "./dist/public" }));
+
+  serve({ fetch: app.fetch, port: config.port }, (info) => {
+    console.log(`Server is running on port ${info.port} with provider=${config.secretProvider}`);
+  });
+
+}
+
+main();
