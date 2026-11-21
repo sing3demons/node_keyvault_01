@@ -1,0 +1,27 @@
+{
+  "name": "node_keyvault",
+  "version": "1.0.0",
+  "private": true,
+  "description": "TypeScript API that reads/writes secrets using Azure Key Vault or local Vault.",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/server.ts --env-file .env",
+    "start": "node dist/server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@azure/identity": "^4.11.1",
+    "@azure/keyvault-secrets": "^4.9.0",
+    "dotenv": "^17.2.3",
+    "express": "^5.1.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.4",
+    "@types/node": "^24.10.0",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,40 @@
+services:
+  # Azure Key Vault emulator (https://github.com/nagyesta/lowkey-vault)
+  keyvault:
+    image: nagyesta/lowkey-vault:7.3.145
+    container_name: keyvault-emulator
+    environment:
+      # Azure SDK requires the vault host to be a subdomain of the challenge resource:
+      # primary.localhost  ends with  .localhost
+      LOWKEY_ARGS: --LOWKEY_AUTH_RESOURCE=localhost
+    networks:
+      default:
+        aliases:
+          - primary.localhost # built-in vault: https://primary.localhost:8443
+    ports:
+      - "8443:8443" # Key Vault API (HTTPS, self-signed cert)
+      - "8080:8080" # fake managed identity token endpoint
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8080/metadata/identity/oauth2/token?resource=https://localhost:8443"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  app:
+    build: .
+    container_name: keyvault-app
+    env_file:
+      - .env
+    environment:
+      SECRET_PROVIDER: azure
+      AZURE_KEYVAULT_URL: https://primary.localhost:8443
+      # DefaultAzureCredential -> ManagedIdentityCredential -> emulator token endpoint
+      IDENTITY_ENDPOINT: http://keyvault:8080/metadata/identity/oauth2/token
+      IDENTITY_HEADER: header
+      # emulator uses a self-signed certificate (local dev only!)
+      NODE_TLS_REJECT_UNAUTHORIZED: "0"
+    ports:
+      - "${PORT:-3000}:${PORT:-3000}"
+    depends_on:
+      keyvault:
+        condition: service_healthy

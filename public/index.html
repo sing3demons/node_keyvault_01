@@ -1,0 +1,481 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Key Vault Secrets</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'><text y='19' font-size='18'>🔐</text></svg>" />
+    <style>
+      :root {
+        --bg: #f6f7fb;
+        --surface: #ffffff;
+        --surface-2: #f1f3f9;
+        --border: #e3e6ef;
+        --text: #171a23;
+        --muted: #6b7286;
+        --accent: #4f46e5;
+        --accent-hover: #4338ca;
+        --accent-soft: #eef0ff;
+        --danger: #dc2626;
+        --danger-soft: #fdecec;
+        --success: #059669;
+        --success-soft: #e6f6f0;
+        --shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 4px 16px rgba(16, 24, 40, 0.06);
+        --radius: 14px;
+        color-scheme: light;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #0e1016;
+          --surface: #161922;
+          --surface-2: #1d212c;
+          --border: #2a2f3d;
+          --text: #e8eaf1;
+          --muted: #8b92a7;
+          --accent: #818cf8;
+          --accent-hover: #a5b4fc;
+          --accent-soft: #23264a;
+          --danger: #f87171;
+          --danger-soft: #3a1d22;
+          --success: #34d399;
+          --success-soft: #133129;
+          --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 8px 24px rgba(0, 0, 0, 0.3);
+          color-scheme: dark;
+        }
+      }
+
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans Thai", sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .wrap { max-width: 960px; margin: 0 auto; padding: 32px 16px 64px; }
+
+      /* header */
+      header { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 24px; flex-wrap: wrap; }
+      .brand { display: flex; align-items: center; gap: 12px; }
+      .logo {
+        width: 40px; height: 40px; border-radius: 12px; display: grid; place-items: center;
+        background: linear-gradient(135deg, var(--accent), #06b6d4); color: #fff;
+      }
+      h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
+      .sub { color: var(--muted); font-size: 13px; }
+      .status { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+      .dot.ok { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
+      .dot.err { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
+
+      /* toolbar */
+      .toolbar { display: flex; gap: 12px; margin-bottom: 16px; }
+      .search { position: relative; flex: 1; }
+      .search svg { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); color: var(--muted); }
+      input, textarea {
+        width: 100%; font: inherit; color: var(--text); background: var(--surface);
+        border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; outline: none;
+        transition: border-color .15s, box-shadow .15s;
+      }
+      input:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+      .search input { padding-left: 38px; }
+      textarea { resize: vertical; min-height: 110px; }
+
+      button {
+        font: inherit; cursor: pointer; border: 1px solid transparent; border-radius: 10px;
+        padding: 9px 14px; display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+        transition: background .15s, border-color .15s, color .15s, transform .05s;
+      }
+      button:active { transform: translateY(1px); }
+      button:disabled { opacity: .6; cursor: progress; }
+      .btn-primary { background: var(--accent); color: #fff; font-weight: 600; }
+      .btn-primary:hover { background: var(--accent-hover); }
+      .btn-ghost { background: var(--surface); border-color: var(--border); color: var(--text); }
+      .btn-ghost:hover { background: var(--surface-2); }
+      .btn-danger { background: var(--danger); color: #fff; font-weight: 600; }
+      .icon-btn {
+        background: transparent; color: var(--muted); padding: 7px; border-radius: 8px;
+      }
+      .icon-btn:hover { background: var(--surface-2); color: var(--text); }
+      .icon-btn.danger:hover { background: var(--danger-soft); color: var(--danger); }
+
+      /* list */
+      .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+      .row {
+        display: grid; grid-template-columns: minmax(140px, 1fr) minmax(0, 1.4fr) auto; gap: 16px; align-items: center;
+        padding: 14px 16px; border-top: 1px solid var(--border);
+      }
+      .row:first-child { border-top: 0; }
+      .row:hover { background: color-mix(in srgb, var(--surface-2) 50%, transparent); }
+      .name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .meta { color: var(--muted); font-size: 12px; }
+      .value {
+        min-width: 0; display: flex; align-items: center; gap: 8px;
+        background: var(--surface-2); border-radius: 8px; padding: 6px 10px; font-size: 13px;
+      }
+      .value span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+      .value .masked { letter-spacing: 2px; color: var(--muted); }
+      .actions { display: flex; gap: 2px; }
+      .badge { font-size: 11px; padding: 1px 8px; border-radius: 99px; background: var(--surface-2); color: var(--muted); margin-left: 6px; font-weight: 500; }
+
+      .empty { padding: 56px 16px; text-align: center; color: var(--muted); }
+      .empty .big { font-size: 40px; margin-bottom: 8px; }
+      .empty h3 { color: var(--text); margin: 0 0 4px; font-size: 16px; }
+      .skeleton { height: 14px; border-radius: 6px; background: linear-gradient(90deg, var(--surface-2), var(--border), var(--surface-2)); background-size: 200% 100%; animation: shimmer 1.2s infinite; }
+      @keyframes shimmer { to { background-position: -200% 0; } }
+      .count { color: var(--muted); font-size: 13px; margin: 0 4px 10px; }
+
+      /* dialog */
+      dialog {
+        border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text);
+        padding: 0; width: min(480px, calc(100vw - 32px)); box-shadow: 0 24px 64px rgba(0, 0, 0, 0.25);
+      }
+      dialog::backdrop { background: rgba(10, 12, 20, 0.45); backdrop-filter: blur(3px); }
+      dialog[open] { animation: pop .18s ease-out; }
+      @keyframes pop { from { opacity: 0; transform: translateY(8px) scale(.98); } }
+      .dlg-body { padding: 22px; display: grid; gap: 14px; }
+      .dlg-body h2 { margin: 0; font-size: 17px; }
+      .dlg-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 14px 22px; background: var(--surface-2); border-top: 1px solid var(--border); }
+      label { display: grid; gap: 6px; font-size: 13px; font-weight: 600; }
+      .hint { font-weight: 400; color: var(--muted); font-size: 12px; }
+      .error-text { color: var(--danger); font-size: 12px; font-weight: 500; min-height: 1em; }
+
+      /* toast */
+      #toasts { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); display: grid; gap: 8px; z-index: 50; width: min(420px, calc(100vw - 32px)); }
+      .toast {
+        display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-radius: 12px;
+        background: var(--text); color: var(--bg); box-shadow: var(--shadow); font-size: 14px; animation: pop .2s ease-out;
+      }
+      .toast.err { background: var(--danger); color: #fff; }
+
+      @media (max-width: 640px) {
+        .row { grid-template-columns: 1fr auto; }
+        .row .value { grid-column: 1 / -1; grid-row: 2; }
+        .toolbar .label-text { display: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <header>
+        <div class="brand">
+          <div class="logo">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          </div>
+          <div>
+            <h1>Key Vault Secrets</h1>
+            <div class="sub">Manage secrets stored in Azure Key Vault</div>
+          </div>
+        </div>
+        <div class="status" id="status"><span class="dot"></span><span>Connecting…</span></div>
+      </header>
+
+      <div class="toolbar">
+        <div class="search">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input id="search" type="search" placeholder="Search secrets…" autocomplete="off" />
+        </div>
+        <button class="btn-ghost" id="btn-refresh" title="Refresh">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
+        </button>
+        <button class="btn-primary" id="btn-new">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+          <span class="label-text">New secret</span>
+        </button>
+      </div>
+
+      <div class="count" id="count"></div>
+      <div class="card" id="list"></div>
+    </div>
+
+    <!-- create / edit -->
+    <dialog id="dlg-edit">
+      <form method="dialog" id="form-edit">
+        <div class="dlg-body">
+          <h2 id="edit-title">New secret</h2>
+          <label>
+            Name
+            <input id="f-name" class="mono" required maxlength="127" pattern="[0-9A-Za-z\-]+" placeholder="my-api-key" autocomplete="off" />
+            <span class="hint">Letters, numbers and dashes only (Key Vault rule)</span>
+          </label>
+          <label>
+            Value
+            <textarea id="f-value" class="mono" required placeholder="secret value"></textarea>
+          </label>
+          <div class="error-text" id="edit-error"></div>
+        </div>
+        <div class="dlg-foot">
+          <button type="button" class="btn-ghost" data-close>Cancel</button>
+          <button type="submit" class="btn-primary" id="btn-save">Save</button>
+        </div>
+      </form>
+    </dialog>
+
+    <!-- delete confirm -->
+    <dialog id="dlg-delete">
+      <div class="dlg-body">
+        <h2>Delete secret?</h2>
+        <div>
+          <span class="mono" id="del-name" style="font-weight:600"></span> will be soft-deleted. Creating a secret with the same name later will recover it.
+        </div>
+      </div>
+      <div class="dlg-foot">
+        <button type="button" class="btn-ghost" data-close>Cancel</button>
+        <button type="button" class="btn-danger" id="btn-confirm-delete">Delete</button>
+      </div>
+    </dialog>
+
+    <div id="toasts"></div>
+
+    <script>
+      const $ = (sel) => document.querySelector(sel);
+      const listEl = $("#list");
+      const state = { secrets: [], revealed: new Map(), query: "", loading: true };
+
+      const icons = {
+        eye: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>',
+        eyeOff: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10.6 5.1A10.7 10.7 0 0 1 12 5c6.5 0 10 7 10 7a17 17 0 0 1-2.2 3.2M6.6 6.6A17 17 0 0 0 2 12s3.5 7 10 7a10 10 0 0 0 5.4-1.6"/><path d="m2 2 20 20"/></svg>',
+        copy: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>',
+        edit: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>',
+        trash: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0-1 14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2L4 6"/></svg>'
+      };
+
+      const escapeHtml = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+
+      function timeAgo(iso) {
+        if (!iso) return "";
+        const sec = Math.round((Date.now() - new Date(iso).getTime()) / 1000);
+        const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
+        const steps = [[60, "second"], [60, "minute"], [24, "hour"], [30, "day"], [12, "month"], [Infinity, "year"]];
+        let value = -sec;
+        for (const [size, unit] of steps) {
+          if (Math.abs(value) < size) return rtf.format(Math.round(value), unit);
+          value /= size;
+        }
+      }
+
+      function toast(message, isError = false) {
+        const el = document.createElement("div");
+        el.className = "toast" + (isError ? " err" : "");
+        el.textContent = message;
+        $("#toasts").append(el);
+        setTimeout(() => el.remove(), isError ? 5000 : 2500);
+      }
+
+      async function api(path, options = {}) {
+        const response = await fetch(path, {
+          ...options,
+          headers: options.body ? { "Content-Type": "application/json" } : undefined
+        });
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}));
+          throw new Error(body.message || `Request failed (${response.status})`);
+        }
+        return response.status === 204 ? null : response.json();
+      }
+
+      function render() {
+        if (state.loading) {
+          listEl.innerHTML = Array.from({ length: 3 }, () =>
+            '<div class="row"><div class="skeleton" style="width:60%"></div><div class="skeleton"></div><div class="skeleton" style="width:80px"></div></div>'
+          ).join("");
+          $("#count").textContent = "";
+          return;
+        }
+
+        const q = state.query.toLowerCase();
+        const items = state.secrets.filter((s) => s.name.toLowerCase().includes(q));
+        $("#count").textContent = state.secrets.length
+          ? q ? `${items.length} of ${state.secrets.length} secrets` : `${state.secrets.length} secret${state.secrets.length === 1 ? "" : "s"}`
+          : "";
+
+        if (!state.secrets.length) {
+          listEl.innerHTML = `
+            <div class="empty">
+              <div class="big">🗝️</div>
+              <h3>No secrets yet</h3>
+              <div>Create your first secret to get started.</div>
+              <div style="margin-top:16px"><button class="btn-primary" data-action="new">New secret</button></div>
+            </div>`;
+          return;
+        }
+        if (!items.length) {
+          listEl.innerHTML = `<div class="empty"><h3>No matches</h3><div>Nothing matches “${escapeHtml(state.query)}”.</div></div>`;
+          return;
+        }
+
+        listEl.innerHTML = items.map((s) => {
+          const revealed = state.revealed.get(s.name);
+          const n = escapeHtml(s.name);
+          return `
+            <div class="row" data-name="${n}">
+              <div style="min-width:0">
+                <div class="name mono" title="${n}">${n}${s.enabled ? "" : '<span class="badge">disabled</span>'}</div>
+                <div class="meta" title="${escapeHtml(s.updatedOn ? new Date(s.updatedOn).toLocaleString() : "")}">Updated ${escapeHtml(timeAgo(s.updatedOn))}</div>
+              </div>
+              <div class="value mono">
+                ${revealed !== undefined ? `<span title="${escapeHtml(revealed)}">${escapeHtml(revealed)}</span>` : '<span class="masked">••••••••••••</span>'}
+                <button class="icon-btn" data-action="reveal" title="${revealed !== undefined ? "Hide" : "Show"} value">${revealed !== undefined ? icons.eyeOff : icons.eye}</button>
+              </div>
+              <div class="actions">
+                <button class="icon-btn" data-action="copy" title="Copy value">${icons.copy}</button>
+                <button class="icon-btn" data-action="edit" title="Edit">${icons.edit}</button>
+                <button class="icon-btn danger" data-action="delete" title="Delete">${icons.trash}</button>
+              </div>
+            </div>`;
+        }).join("");
+      }
+
+      async function load() {
+        try {
+          const { secrets } = await api("/secrets");
+          state.secrets = secrets;
+        } catch (e) {
+          toast(e.message, true);
+        } finally {
+          state.loading = false;
+          render();
+        }
+      }
+
+      async function fetchValue(name) {
+        const { value } = await api(`/secrets/${encodeURIComponent(name)}`);
+        return value;
+      }
+
+      // ---- create / edit
+      const dlgEdit = $("#dlg-edit");
+      let editing = null;
+
+      async function openEdit(name = null) {
+        editing = name;
+        $("#edit-title").textContent = name ? "Edit secret" : "New secret";
+        $("#f-name").value = name ?? "";
+        $("#f-name").readOnly = !!name;
+        $("#f-value").value = "";
+        $("#edit-error").textContent = "";
+        dlgEdit.showModal();
+        if (name) {
+          $("#f-value").placeholder = "Loading…";
+          try {
+            $("#f-value").value = state.revealed.get(name) ?? (await fetchValue(name));
+          } catch (e) {
+            $("#edit-error").textContent = e.message;
+          }
+          $("#f-value").placeholder = "secret value";
+          $("#f-value").focus();
+        } else {
+          $("#f-name").focus();
+        }
+      }
+
+      $("#form-edit").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const name = $("#f-name").value.trim();
+        const value = $("#f-value").value;
+        if (!editing && state.secrets.some((s) => s.name.toLowerCase() === name.toLowerCase())) {
+          $("#edit-error").textContent = `"${name}" already exists — use edit instead.`;
+          return;
+        }
+        const btn = $("#btn-save");
+        btn.disabled = true;
+        btn.textContent = "Saving…";
+        try {
+          await api(`/secrets/${encodeURIComponent(name)}`, { method: "PUT", body: JSON.stringify({ value }) });
+          if (state.revealed.has(name)) state.revealed.set(name, value);
+          dlgEdit.close();
+          toast(editing ? `Updated “${name}”` : `Created “${name}”`);
+          await load();
+        } catch (e) {
+          $("#edit-error").textContent = e.message;
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "Save";
+        }
+      });
+
+      // ---- delete
+      const dlgDelete = $("#dlg-delete");
+      let deleting = null;
+
+      $("#btn-confirm-delete").addEventListener("click", async () => {
+        const btn = $("#btn-confirm-delete");
+        btn.disabled = true;
+        btn.textContent = "Deleting…";
+        try {
+          await api(`/secrets/${encodeURIComponent(deleting)}`, { method: "DELETE" });
+          state.revealed.delete(deleting);
+          state.secrets = state.secrets.filter((s) => s.name !== deleting);
+          dlgDelete.close();
+          toast(`Deleted “${deleting}”`);
+          render();
+        } catch (e) {
+          toast(e.message, true);
+        } finally {
+          btn.disabled = false;
+          btn.textContent = "Delete";
+        }
+      });
+
+      // ---- row actions
+      document.addEventListener("click", async (event) => {
+        const target = event.target.closest("[data-action], [data-close]");
+        if (!target) return;
+        if (target.hasAttribute("data-close")) return target.closest("dialog").close();
+
+        const action = target.dataset.action;
+        if (action === "new") return openEdit();
+        const name = target.closest(".row")?.dataset.name;
+        if (!name) return;
+
+        try {
+          if (action === "reveal") {
+            if (state.revealed.has(name)) state.revealed.delete(name);
+            else state.revealed.set(name, await fetchValue(name));
+            render();
+          } else if (action === "copy") {
+            const value = state.revealed.get(name) ?? (await fetchValue(name));
+            await navigator.clipboard.writeText(value);
+            toast(`Copied “${name}” to clipboard`);
+          } else if (action === "edit") {
+            openEdit(name);
+          } else if (action === "delete") {
+            deleting = name;
+            $("#del-name").textContent = name;
+            dlgDelete.showModal();
+          }
+        } catch (e) {
+          toast(e.message, true);
+        }
+      });
+
+      // click on backdrop closes dialogs
+      for (const dlg of [dlgEdit, dlgDelete]) {
+        dlg.addEventListener("click", (event) => { if (event.target === dlg) dlg.close(); });
+      }
+
+      $("#btn-new").addEventListener("click", () => openEdit());
+      $("#btn-refresh").addEventListener("click", () => { state.loading = true; render(); load(); });
+      $("#search").addEventListener("input", (event) => { state.query = event.target.value.trim(); render(); });
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "/" && document.activeElement.tagName !== "INPUT" && document.activeElement.tagName !== "TEXTAREA") {
+          event.preventDefault();
+          $("#search").focus();
+        }
+      });
+
+      // ---- health
+      api("/health")
+        .then((h) => {
+          $("#status").innerHTML = `<span class="dot ok"></span><span>Connected · ${escapeHtml(h.provider)}</span>`;
+        })
+        .catch(() => {
+          $("#status").innerHTML = '<span class="dot err"></span><span>API unreachable</span>';
+        });
+
+      render();
+      load();
+    </script>
+  </body>
+</html>
