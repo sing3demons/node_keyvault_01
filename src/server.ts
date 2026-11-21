@@ -7,18 +7,6 @@ import { KeyVaultService } from "./keyvault/service.js";
 import { KeyVaultHandler } from "./keyvault/handle.js";
 import { AzureKeyVaultSecretStore } from "./keyvault/store.js";
 
-
-function getErrorStatusCode(error: unknown): ContentfulStatusCode {
-  if (typeof error === "object" && error !== null && "statusCode" in error) {
-    const statusCode = (error as { statusCode?: unknown }).statusCode;
-    if (typeof statusCode === "number" && statusCode >= 400 && statusCode < 600) {
-      return statusCode as ContentfulStatusCode;
-    }
-  }
-  return 500;
-}
-
-
 async function main() {
   const azureVaultUrl: string = process.env.AZURE_KEYVAULT_URL as string;
   const keyVaultSecretStore = new AzureKeyVaultSecretStore(azureVaultUrl);
@@ -27,9 +15,21 @@ async function main() {
 
   const app = new Hono();
 
-  app.onError((error, c) => c.json({
-    message: error instanceof Error ? error.message : "Unknown error"
-  }, getErrorStatusCode(error)));
+  app.onError((error, c) => {
+    let statusCode: ContentfulStatusCode = 500;
+    if (typeof error === "object" && error !== null && "statusCode" in error) {
+      const code = (error as { statusCode?: unknown }).statusCode;
+      if (typeof code === "number" && code >= 400 && code < 600) {
+        statusCode = code as ContentfulStatusCode;
+      }
+    }
+    return c.json(
+      {
+        message: error instanceof Error ? error.message : "Unknown error"
+      },
+      statusCode
+    );
+  });
 
   app.get("/health", (c) => c.json({ status: "ok" }));
 
