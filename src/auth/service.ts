@@ -12,7 +12,6 @@ import {
   displayProfile,
   isPassword,
   type EmailChallenge,
-  type EmailChallengeReason,
   type LocalizedProfile,
   type Role,
   type SignInMethod,
@@ -225,25 +224,28 @@ export class AuthService implements TokenAuthenticator {
   }
 
   /**
-   * Verification link opened (any browser or device). Proves the mailbox, so the address is marked verified
-   * now; a sign-in is finished by the page that started it, which polls emailChallengeStatus().
+   * Emailed link opened. Marks the address verified; a sign-in link also signs the user in on `requestId`,
+   * the authorization request started by the browser that opened the link (so it gets the tokens).
    */
-  async approveEmailLink(challengeId: string, token: string): Promise<{ approved: true; reason: EmailChallengeReason; signIn: boolean }> {
-    const challenge = await this.emailCodes.approveLink(challengeId, token);
-    await this.repo.users.markEmailVerified(challenge.userId, challenge.email, new Date());
-    return { approved: true, reason: challenge.reason, signIn: challenge.purpose === "signin" };
-  }
-
-  /** Polled by the page waiting for its link to be opened: `{ pending: true }` until then. */
-  async emailChallengeStatus(
+  async openEmailLink(
     challengeId: string,
+    token: string,
     requestId?: string,
     device?: DeviceContext
-  ): Promise<{ pending: true } | { redirect: string } | { verified: true }> {
+  ): Promise<{ redirect: string } | { verified: true }> {
     if (requestId !== undefined) await this.assertAuthRequest(requestId);
-    const challenge = await this.emailCodes.poll(challengeId, requestId);
-    if (!challenge) return { pending: true };
-    return this.finishChallenge(challenge, requestId, device);
+    const challenge = await this.emailCodes.openLink(challengeId, token, requestId !== undefined);
+    await this.repo.users.markEmailVerified(challenge.userId, challenge.email, new Date());
+    if (challenge.purpose === "verify") return { verified: true };
+    return this.completeAuthRequest(requestId!, challenge.userId, {
+      device: device!,
+      method: challenge.reason === "register" ? "registration" : "password+email_link"
+    });
+  }
+
+  /** Account page, verify-only link: `{ pending: true }` until it has been opened. */
+  async emailChallengeStatus(challengeId: string): Promise<{ pending: true } | { verified: true }> {
+    return (await this.emailCodes.poll(challengeId)) ? { verified: true } : { pending: true };
   }
 
   /** A confirmed challenge: "verify" is done; "signin" completes its authorization request. */

@@ -193,7 +193,7 @@ export interface EmailChallenge {
 
 // ---------------------------------------------------------------- devices
 
-export const SIGN_IN_METHODS = ["password", "password+email_code", "passkey", "registration"] as const;
+export const SIGN_IN_METHODS = ["password", "password+email_code", "password+email_link", "passkey", "registration"] as const;
 export type SignInMethod = (typeof SIGN_IN_METHODS)[number];
 
 /**

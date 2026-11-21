@@ -119,18 +119,21 @@ export class AuthController {
     return c.json(await this.auth.confirmEmailCode(body.challengeId, body.code, body.request_id, device));
   }
 
-  /** POST /auth/email/link — { challengeId, token } from the emailed link -> { approved, reason, signIn } */
-  async approveEmailLink(c: Context) {
-    const { challengeId, token } = await parseJsonBody(c, emailLinkBody);
-    return c.json(await this.auth.approveEmailLink(challengeId, token));
+  /**
+   * POST /auth/email/link — { challengeId, token, request_id? } from the emailed link.
+   * Sign-in link + request_id (started by the browser that opened it) -> { redirect }; verify link -> { verified }.
+   */
+  async openEmailLink(c: Context) {
+    const body = await parseJsonBody(c, emailLinkBody);
+    const device = body.request_id !== undefined ? this.device(c) : undefined;
+    return c.json(await this.auth.openEmailLink(body.challengeId, body.token, body.request_id, device));
   }
 
-  /** POST /auth/email/status — { challengeId, request_id? } -> { pending } | { redirect } | { verified } */
+  /** POST /auth/email/status — { challengeId } (account page, verify link) -> { pending } | { verified } */
   async emailChallengeStatus(c: Context) {
     c.header("Cache-Control", "no-store");
-    const body = await parseJsonBody(c, emailStatusBody);
-    const device = body.request_id !== undefined ? this.device(c) : undefined;
-    return c.json(await this.auth.emailChallengeStatus(body.challengeId, body.request_id, device));
+    const { challengeId } = await parseJsonBody(c, emailStatusBody);
+    return c.json(await this.auth.emailChallengeStatus(challengeId));
   }
 
   /** POST /auth/email/resend — { challengeId } -> a fresh code / link is emailed */

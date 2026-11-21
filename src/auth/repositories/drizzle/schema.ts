@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import { SIGN_IN_METHODS } from "../../model.js";
 import { boolean, check, index, integer, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 const ts = (name: string) => timestamp(name, { withTimezone: true, mode: "date" });
@@ -121,7 +122,7 @@ export const devices = pgTable(
     createdAt: ts("created_at").notNull(),
     lastSignInAt: ts("last_sign_in_at").notNull(),
     lastSeenAt: ts("last_seen_at").notNull(),
-    lastMethod: text("last_method", { enum: ["password", "password+email_code", "passkey", "registration"] }).notNull(),
+    lastMethod: text("last_method", { enum: SIGN_IN_METHODS }).notNull(),
     signIns: integer("sign_ins").notNull().default(1)
   },
   (t) => [uniqueIndex("devices_user_key_idx").on(t.userId, t.keyHash), index("devices_user_seen_idx").on(t.userId, t.lastSeenAt)]

@@ -101,7 +101,9 @@ type Credential =
 
 - เลือกวิธีด้วย `EMAIL_VERIFICATION`:
   - `code` (default) — ส่งรหัส 6 หลัก ให้กรอกในหน้าที่ขอ
-  - `link` — ส่ง link `<APP_URL>/verify-email?id=…&token=…` (token 256-bit) กดแล้วกด "Confirm" (กัน mail scanner เปิด link เอง) → หน้า login/Account ที่รออยู่จะไปต่อเอง (poll `POST /auth/email/status` ทุก 2 วินาที) เปิด link จากมือถือก็ได้ เพราะ sign-in จบที่หน้าเดิมซึ่งถือ PKCE verifier
+  - `link` — ส่ง link `<APP_URL>/verify-email?id=…&token=…` (token 256-bit, ใช้ได้ครั้งเดียว) ต้องกดปุ่มในหน้านั้นก่อน (กัน mail scanner เปิด link เอง)
+    - link สำหรับ login (สมัคร / login ด้วย email มี `&signin=1`): กดแล้ว **login ใน browser ที่เปิด link เลย** — แท็บนั้นเริ่ม `/oauth/authorize` ของตัวเอง (PKCE ใหม่) แล้วหน้า login แลก link กับ `request_id` ใหม่ → redirect `/callback?code=…` → ได้ token; อุปกรณ์ที่บันทึกคือ browser ที่เปิด link
+    - link ยืนยัน email จากหน้า Account: กดแล้วยืนยันเฉยๆ ไม่ login; dialog ที่เปิดค้างไว้รู้เองจาก poll `POST /auth/email/status`
   - `APP_URL` ไม่ตั้ง = ใช้ origin ของ `OAUTH_REDIRECT_URIS` ตัวแรก; challenge ที่ส่งไปแล้วใช้วิธีเดิมต่อแม้เปลี่ยน config
 
 - สมัครสมาชิก → ส่งรหัสไปที่ email → กรอกรหัสในหน้า login แล้วเข้าระบบเลย (`Account.emailVerified`, claim `email_verified`)
@@ -142,7 +144,7 @@ Flow: UI → `GET /oauth/authorize` → redirect ไป `/login?request_id=…` 
 - `POST /auth/register` (`username`, `email`, `password`, `profiles`, `preferredLang?`, `request_id?`) → account + `verification` (ส่งรหัสไป email แล้ว)
 - `POST /auth/login/password` (`username` = username หรือ email) → `{ redirect }` หรือ `{ verify }` (ต้องกรอกรหัสจาก email ต่อ)
 - `POST /auth/email/verify` (`challengeId`, `code`, `request_id?`) → `{ redirect }` (ขั้น login) หรือ `{ verified: true }` · `POST /auth/email/resend` (`challengeId`)
-- `EMAIL_VERIFICATION=link`: `POST /auth/email/link` (`challengeId`, `token` จาก link) → `{ approved }` · `POST /auth/email/status` (`challengeId`, `request_id?`) → `{ pending }` / `{ redirect }` / `{ verified }`
+- `EMAIL_VERIFICATION=link`: `POST /auth/email/link` (`challengeId`, `token` จาก link, `request_id` ของแท็บที่เปิด link — ต้องมีสำหรับ link login) → `{ redirect }` / `{ verified }` · `POST /auth/email/status` (`challengeId`, link ยืนยันจาก Account) → `{ pending }` / `{ verified }`
 - `GET /auth/me` · `PATCH /auth/me` · `POST /auth/me/email/verification` (Bearer)
 - `GET /auth/me/devices` · `POST /auth/me/devices/:id/sign-out` · `DELETE /auth/me/devices/:id` (Bearer)
 - `POST /auth/webauthn/login/options` · `POST /auth/webauthn/login/verify`

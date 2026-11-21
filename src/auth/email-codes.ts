@@ -2,9 +2,10 @@
 // sign-in step when someone signs in with their email address.
 //
 // EMAIL_VERIFICATION=code — the email holds a 6-digit code, typed into the page that asked for it (check()).
-// EMAIL_VERIFICATION=link — the email holds a link with a 256-bit token. Opening it (in any browser, even
-//   on another device) approves the challenge (approveLink()); the page that asked keeps polling (poll())
-//   and finishes there, because only it holds the OAuth state (PKCE verifier) for the sign-in.
+// EMAIL_VERIFICATION=link — the email holds a link with a 256-bit token (openLink()):
+//   - sign-in links sign the user in where the link is opened: that tab starts its own OAuth request
+//     (it cannot reuse the original tab's PKCE verifier) and redeems the link against it;
+//   - verify-only links mark the address verified; the account page that asked notices by polling (poll()).
 
 import { randomInt, timingSafeEqual } from "node:crypto";
 import { randomToken, sha256 } from "../shared/crypto.js";
@@ -129,12 +130,21 @@ export class EmailCodeService {
   }
 
   /**
-   * Link opened and confirmed (the person proved they can read the mailbox). Nothing is signed in here:
-   * the challenge is only marked approved, for the requesting page to pick up with poll().
+   * Emailed link opened and confirmed (the person proved they can read the mailbox).
+   * - "signin": consumed and returned, for the caller to sign the user in on the authorization request of
+   *   the browser that opened the link (`forSignIn` = the caller has one). Bound to the token, not to the
+   *   original request: the password (or registration) was already checked when the link was sent.
+   * - "verify": marked approved (kept for the account page's poll()); opening it twice is harmless.
    */
-  async approveLink(challengeId: string, token: string): Promise<EmailChallenge> {
+  async openLink(challengeId: string, token: string, forSignIn: boolean): Promise<EmailChallenge> {
     const stored = await this.repo.emailChallenges.findActive(challengeId, new Date());
     if (!stored || this.methodOf(stored) !== "link") throw this.gone();
+    if (stored.purpose === "signin") {
+      if (!forSignIn) throw new HttpError(400, "request_id is required for a sign-in link");
+      await this.verifySecret(stored, token);
+      if (!(await this.repo.emailChallenges.consume(stored.id))) throw this.gone();
+      return stored;
+    }
     if (stored.approvedAt) return stored; // opened twice: already done
     await this.verifySecret(stored, token);
     if (!(await this.repo.emailChallenges.approve(stored.id, new Date()))) throw this.gone();
@@ -142,12 +152,12 @@ export class EmailCodeService {
   }
 
   /**
-   * The requesting page asks whether the link was opened. Returns null while waiting; once approved the
-   * challenge is consumed (single use) and returned. `authRequestId` must match, as in check().
+   * Account page: has the verify-only link been opened? Null while waiting; once approved the challenge is
+   * consumed and returned. (Sign-in challenges are not polled: their link signs in where it is opened.)
    */
-  async poll(challengeId: string, authRequestId?: string): Promise<EmailChallenge | null> {
+  async poll(challengeId: string): Promise<EmailChallenge | null> {
     const stored = await this.repo.emailChallenges.findActive(challengeId, new Date());
-    if (!stored || (stored.authRequestId ?? null) !== (authRequestId ?? null)) throw this.gone();
+    if (!stored || stored.purpose !== "verify") throw this.gone();
     if (!stored.approvedAt) return null;
     if (!(await this.repo.emailChallenges.consume(stored.id))) throw this.gone();
     return stored;
@@ -233,7 +243,9 @@ export class EmailCodeService {
     const name = escapeHtml(appName);
     let subject: string, text: string, html: string;
     if (this.methodOf(c) === "link") {
-      const url = `${this.settings.linkBaseUrl}/verify-email?${new URLSearchParams({ id: c.id, token: secret })}`;
+      const params = new URLSearchParams({ id: c.id, token: secret });
+      if (c.purpose === "signin") params.set("signin", "1"); // tells the page to start a sign-in first
+      const url = `${this.settings.linkBaseUrl}/verify-email?${params}`;
       subject = c.reason === "login" ? `Sign in to ${appName}` : `Confirm your email for ${appName}`;
       text = [`Open this link to ${action}:`, "", url, "", expires, "", ignore].join("\n");
       html =

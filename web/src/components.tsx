@@ -58,8 +58,12 @@ interface CodeFormProps {
   submitLabel: string;
   /** Code method. Throw to show an error; resolve when done. */
   onConfirm: (code: string) => Promise<void>;
-  /** Link method: called every 2s; resolve true once the link was opened (and handled). Throw to stop with an error. */
-  onPoll: () => Promise<boolean>;
+  /**
+   * Link method, when this page should notice the link being opened (account page): called every 2s;
+   * resolve true once handled, throw to stop with an error. Without it (sign-in), the link signs the user
+   * in wherever it is opened.
+   */
+  onPoll?: () => Promise<boolean>;
   onCancel?: () => void;
   cancelLabel?: string;
 }
@@ -90,12 +94,12 @@ export function EmailCodeForm({ pending: initial, submitLabel, onConfirm, onPoll
 
   // link method: wait for the link to be opened (in any browser / device)
   useEffect(() => {
-    if (!isLink) return;
+    if (!isLink || !pollRef.current) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
     const tick = async () => {
       try {
-        if (await pollRef.current()) return;
+        if (await pollRef.current?.()) return;
       } catch (e) {
         if (!stopped) setPollError((e as Error).message);
         return;
@@ -150,11 +154,18 @@ export function EmailCodeForm({ pending: initial, submitLabel, onConfirm, onPoll
   if (isLink) {
     return (
       <div className="dlg-body">
-        <p>
-          We sent a link to <strong>{pending.email}</strong>. Open it — on this or any other device —{" "}
-          {pending.reason === "login" ? "to finish signing in" : "to confirm your email address"}.
-        </p>
-        {!pollError && (
+        {onPoll ? (
+          <p>
+            We sent a link to <strong>{pending.email}</strong>. Open it — on this or any other device — to confirm your
+            email address.
+          </p>
+        ) : (
+          <p>
+            We sent a link to <strong>{pending.email}</strong>. Open it to {pending.reason === "login" ? "finish signing in" : "confirm your email and sign in"}{" "}
+            — you will be signed in in the browser where you open it, so you can close this tab.
+          </p>
+        )}
+        {onPoll && !pollError && (
           <div className="waiting">
             <span className="spinner" /> Waiting for you to open the link…
           </div>

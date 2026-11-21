@@ -1,8 +1,10 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
-  approveEmailLink,
   confirmSignInCode,
-  emailChallengeStatus,
+  openEmailLink,
+  signInWithEmailLink,
+  clearEmailLink,
+  peekEmailLink,
   handleCallback,
   loginWithPasskey,
   loginWithPassword,
@@ -48,6 +50,22 @@ export function LoginPage() {
   const [error, setError] = useState("");
   /** Set when the server wants the code it emailed before signing in. */
   const [verify, setVerify] = useState<PendingVerification | null>(null);
+  /** This tab came from an emailed sign-in link (VerifyEmailPage): redeem it on this request. */
+  const [fromLink] = useState(() => (requestId ? peekEmailLink() : null));
+  const linkRedeemed = useRef(false); // StrictMode runs effects twice; the link is single use
+
+  // runs after render, when `run` (below) is defined
+  useEffect(() => {
+    if (!fromLink || !requestId || linkRedeemed.current) return;
+    linkRedeemed.current = true;
+    clearEmailLink();
+    run(async () => {
+      const r = await openEmailLink(fromLink.challengeId, fromLink.token, requestId);
+      if ("redirect" in r) return r;
+      throw new Error("Email verified — please sign in");
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (!requestId) {
     return (
@@ -109,6 +127,16 @@ export function LoginPage() {
     setError("");
   };
 
+  if (fromLink && !error) {
+    return (
+      <Shell title="Signing you in…" sub="Key Vault Secrets">
+        <div className="dlg-body">
+          <div className="skeleton" />
+        </div>
+      </Shell>
+    );
+  }
+
   if (verify) {
     return (
       <Shell title={verify.reason === "login" ? "Check your email" : "Verify your email"} sub="Key Vault Secrets">
@@ -125,17 +153,6 @@ export function LoginPage() {
             try {
               const { redirect } = await confirmSignInCode(requestId, verify.challengeId, code);
               location.assign(redirect);
-            } catch (e) {
-              restartIfRequestExpired(e);
-              throw e;
-            }
-          }}
-          onPoll={async () => {
-            try {
-              const status = await emailChallengeStatus(verify.challengeId, requestId);
-              if (!("redirect" in status)) return false;
-              location.assign(status.redirect);
-              return true;
             } catch (e) {
               restartIfRequestExpired(e);
               throw e;
@@ -259,22 +276,25 @@ function restartIfRequestExpired(e: unknown) {
 }
 
 /**
- * /verify-email?id=…&token=… — opened from the emailed link (EMAIL_VERIFICATION=link). Needs a click so mail
- * scanners that prefetch links cannot approve a sign-in on their own.
+ * /verify-email?id=…&token=…[&signin=1] — opened from the emailed link (EMAIL_VERIFICATION=link).
+ * Sign-in links: this tab starts its own sign-in and the login page redeems the link, so the user ends up
+ * signed in right here. Needs a click so mail scanners that open links cannot sign in on their own.
  */
 export function VerifyEmailPage() {
   const q = new URLSearchParams(location.search);
   const id = q.get("id");
   const token = q.get("token");
-  const [state, setState] = useState<"ready" | "busy" | "error" | { signIn: boolean }>("ready");
+  const signIn = q.get("signin") === "1";
+  const [state, setState] = useState<"ready" | "busy" | "error" | "verified">("ready");
   const [error, setError] = useState("");
 
   const confirm = async () => {
     if (!id || !token) return;
     setState("busy");
+    if (signIn) return signInWithEmailLink(id, token); // -> /oauth/authorize -> /login -> /callback
     try {
-      const r = await approveEmailLink(id, token);
-      setState({ signIn: r.signIn });
+      await openEmailLink(id, token);
+      setState("verified");
     } catch (e) {
       setError((e as Error).message);
       setState("error");
@@ -291,27 +311,23 @@ export function VerifyEmailPage() {
     );
   }
 
-  if (typeof state === "object") {
+  if (state === "verified") {
     return (
-      <Shell title={state.signIn ? "Sign-in approved" : "Email verified"} sub="Key Vault Secrets">
+      <Shell title="Email verified" sub="Key Vault Secrets">
         <div className="dlg-body">
-          <p>
-            {state.signIn
-              ? "Your email is confirmed. Go back to the window where you were signing in — it continues automatically. You can close this tab."
-              : "Your email address is confirmed. You can close this tab."}
-          </p>
+          <p>Your email address is confirmed. You can close this tab.</p>
         </div>
       </Shell>
     );
   }
 
   return (
-    <Shell title="Confirm your email" sub="Key Vault Secrets">
+    <Shell title={signIn ? "Sign in" : "Confirm your email"} sub="Key Vault Secrets">
       <div className="dlg-body">
-        <p>Confirm that this email address is yours.</p>
+        <p>{signIn ? "Continue to sign in to your account in this browser." : "Confirm that this email address is yours."}</p>
         <div className="error-text">{error}</div>
         <button className="btn-primary auth-submit" onClick={confirm} disabled={state === "busy"}>
-          {state === "busy" ? "Confirming…" : "Confirm"}
+          {state === "busy" ? (signIn ? "Signing in…" : "Confirming…") : signIn ? "Continue & sign in" : "Confirm"}
         </button>
       </div>
     </Shell>

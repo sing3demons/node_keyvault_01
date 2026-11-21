@@ -94,17 +94,15 @@ export const emailCodeBody = z.object({
 
 export const emailResendBody = z.object({ challengeId: nonEmpty.max(64) });
 
-/** POST /auth/email/link — from the page the emailed link opens. */
+/** POST /auth/email/link — from the page the emailed link opens (`request_id` = its own sign-in request). */
 export const emailLinkBody = z.object({
   challengeId: nonEmpty.max(64),
-  token: base64url.max(64)
-});
-
-/** POST /auth/email/status — polled by the page waiting for its link to be opened. */
-export const emailStatusBody = z.object({
-  challengeId: nonEmpty.max(64),
+  token: base64url.max(64),
   request_id: nonEmpty.optional()
 });
+
+/** POST /auth/email/status — the account page polling for its verify link to be opened. */
+export const emailStatusBody = z.object({ challengeId: nonEmpty.max(64) });
 
 export const passkeyLoginOptionsBody = z.object({
   request_id: nonEmpty
