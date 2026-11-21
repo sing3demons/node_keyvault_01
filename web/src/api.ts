@@ -129,8 +129,21 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 const path = (name: string) => `/secrets/${encodeURIComponent(name)}`;
 
-/** Client management calls, for either a signed-in admin (Bearer) or the master credential (Basic). */
+/** Owners of client management (role client_admin) and the master credential's state. */
+export interface OwnersView {
+  owners: { id: string; username: string; email?: string }[];
+  master: { configured: boolean; username?: string; email?: string; enabled: boolean; disabledAt?: string; disabledBy?: string };
+  /** Present on GET: who is calling. */
+  you?: { kind: "master"; name: string } | { kind: "user"; id: string; username: string };
+}
+
+/** Client management calls, for either a signed-in owner (Bearer) or the master credential (Basic). */
 export interface ClientsApi {
+  owners(): Promise<OwnersView>;
+  addOwner(username: string): Promise<OwnersView>;
+  removeOwner(username: string): Promise<OwnersView>;
+  disableMaster(): Promise<OwnersView>;
+  enableMaster(): Promise<OwnersView>;
   list(): Promise<OAuthClient[]>;
   create(input: OAuthClientInput): Promise<OAuthClient>;
   update(id: string, input: OAuthClientInput): Promise<OAuthClient>;
@@ -140,7 +153,13 @@ export interface ClientsApi {
 
 function clientsApi(send: <T>(path: string, init?: RequestInit) => Promise<T>): ClientsApi {
   const one = (id: string) => `/admin/clients/${encodeURIComponent(id)}`;
+  const owner = (u: string) => `/admin/client-owners/${encodeURIComponent(u)}`;
   return {
+    owners: () => send<OwnersView>("/admin/client-owners"),
+    addOwner: (u) => send<OwnersView>(owner(u), { method: "PUT" }),
+    removeOwner: (u) => send<OwnersView>(owner(u), { method: "DELETE" }),
+    disableMaster: () => send<OwnersView>("/admin/client-owners/master/disable", { method: "POST" }),
+    enableMaster: () => send<OwnersView>("/admin/client-owners/master/enable", { method: "POST" }),
     list: async () => (await send<{ clients: OAuthClient[] }>("/admin/clients")).clients,
     create: (input) => send<OAuthClient>("/admin/clients", { method: "POST", body: JSON.stringify(input) }),
     update: (id, input) => send<OAuthClient>(one(id), { method: "PUT", body: JSON.stringify(input) }),
@@ -152,17 +171,45 @@ function clientsApi(send: <T>(path: string, init?: RequestInit) => Promise<T>): 
 /** As the signed-in admin user. */
 export const userClientsApi: ClientsApi = clientsApi(request);
 
-/** base64("username:password") (UTF-8 safe), as MASTER_CREDENTIALS and the Basic header carry it. */
-export const basicCredentials = (username: string, password: string) =>
-  btoa(String.fromCharCode(...new TextEncoder().encode(`${username}:${password}`)));
+// ------------------------------------------------------------------ master sign-in (/manage)
 
-/** As the master credential (MASTER_CREDENTIALS), sent as HTTP Basic — no user sign-in involved. */
-export function masterClientsApi(credentials: string): ClientsApi {
+async function postPublic<T>(path: string, body: unknown, bearer?: string): Promise<T> {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(bearer ? { Authorization: `Bearer ${bearer}` } : {}) },
+    body: JSON.stringify(body)
+  });
+  const json = (await res.json().catch(() => ({}))) as { error?: string; error_description?: string };
+  if (!res.ok) throw new Error(json.error_description ?? json.error ?? `Request failed (${res.status})`);
+  return json as T;
+}
+
+export interface MasterSession {
+  access_token: string;
+  expires_in: number;
+  username: string;
+}
+
+export const master = {
+  /** Step 1: username or email + password -> a code / link is emailed to the master. */
+  login: (username: string, password: string) =>
+    postPublic<{ verify: PendingVerification }>("/auth/master/login", { username, password }),
+  /** Step 2 (code). */
+  verify: (challengeId: string, code: string) => postPublic<MasterSession>("/auth/master/verify", { challengeId, code }),
+  /** Step 2 (link): poll until the link was opened. */
+  status: (challengeId: string) =>
+    postPublic<{ pending: true } | MasterSession>("/auth/master/status", { challengeId }),
+  logout: (token: string) => postPublic<null>("/auth/master/logout", {}, token).catch(() => null)
+};
+
+/** As the master (session from the master sign-in). `onUnauthorized`: session expired / master disabled. */
+export function masterClientsApi(token: string, onUnauthorized: () => void): ClientsApi {
   return clientsApi(async <T,>(p: string, init?: RequestInit) => {
     const res = await fetch(p, {
       ...init,
-      headers: { Authorization: `Basic ${credentials}`, ...(init?.body ? { "Content-Type": "application/json" } : {}) }
+      headers: { Authorization: `Bearer ${token}`, ...(init?.body ? { "Content-Type": "application/json" } : {}) }
     });
+    if (res.status === 401) onUnauthorized();
     if (!res.ok) {
       const body = (await res.json().catch(() => ({}))) as { error?: string; error_description?: string };
       throw new Error(body.error_description ?? body.error ?? `Request failed (${res.status})`);

@@ -97,7 +97,7 @@ type Credential =
 - password ที่ `algorithm` ไม่ใช่ argon2id (เช่น import มาจากระบบอื่น) จะถูก verify แล้ว upgrade เป็น argon2id ตอน login — เพิ่มตัว verify ได้ที่ [src/shared/hashing.ts](src/shared/hashing.ts)
 - ลบ credential สุดท้ายของ user ไม่ได้
 
-**OAuth clients** (เก็บใน DB — จัดการโดย admin ที่ปุ่ม "Clients" หรือ `/admin/clients`)
+**OAuth clients** (เก็บใน DB — จัดการโดย owner (role `client_admin`) ที่ปุ่ม "Clients" หรือ `/admin/clients`)
 
 - metadata ตาม RFC 7591: `client_id`, `client_name`, `redirect_uris` (ตรงทุกตัวอักษร; https, http เฉพาะ localhost, หรือ private-use scheme แบบ `com.example.app:/cb` ตาม RFC 8252), `token_endpoint_auth_method`, `grant_types`, `scope`, `client_uri`, `initiate_login_uri` (OIDC)
 - ชนิด client: `none` = public (SPA / mobile, ใช้ PKCE อย่างเดียว) · `client_secret_basic` (default ตาม RFC 7591) / `client_secret_post` = confidential — secret แสดงครั้งเดียวตอนสร้าง/rotate, DB เก็บแค่ SHA-256
@@ -109,11 +109,23 @@ type Credential =
   ```
 - **`/oauth/introspect`** (RFC 7662): resource server (confidential client) ส่ง token มาตรวจได้ → `{ active, scope, client_id, sub, username?, exp, token_type }` หรือ `{ active: false }`
 - ลบ client = revoke token ของมันทั้งหมด (RFC 7592); ลบ client ที่ตัวเอง login อยู่ไม่ได้
-- **Master credential** — `MASTER_CREDENTIALS` = base64(`username:password`) (password ≥ 16 ตัว) ใช้จัดการ client ได้โดยไม่ต้องมี user admin: เปิดหน้า `/manage` แล้ว login ด้วย username/password นั้น หรือเรียก API ด้วย `Authorization: Basic $MASTER_CREDENTIALS`; จัดการได้เฉพาะ `/admin/clients` (ไม่รวม users / secrets); ไม่ตั้ง = ปิด, ค่าผิดรูปแบบ = server ไม่ start
+- **Owners (role `client_admin`)** — สิทธิ์จัดการ client แยกจาก role `admin` (admin จัดการ user/secret แต่จัดการ client ไม่ได้ และให้/ถอด `client_admin` ผ่าน `/admin/users` ไม่ได้) — owner และ master เพิ่ม/ลบ owner ได้ที่ Clients → Owners หรือ API:
+  - `GET /admin/client-owners` · `PUT/DELETE /admin/client-owners/:username`
+  - `POST /admin/client-owners/master/disable` — "ลบ" master: ต้องมี owner อย่างน้อย 1 คน; เก็บใน DB ดังนั้น `MASTER_CREDENTIALS` ใช้ไม่ได้อีกแม้ยังอยู่ใน env (หลุดไปก็ไร้ผล)
+  - `POST /admin/client-owners/master/enable` — owner เท่านั้น; กู้คืนจากเครื่อง server: `pnpm master:enable` (image: `node dist/cli/master-enable.js`)
+  - ลบ owner คนสุดท้ายไม่ได้ขณะ master ถูกปิด — ระบบไม่มีวันไม่เหลือใครจัดการ client
+- **Master account** — `MASTER_CREDENTIALS` = base64(`<username>:<password>|<email>:<alg>`), `alg` = `argon2id` | `bcrypt` (password ใส่ตรงๆ ≥ 16 ตัว หรือ hash จาก `pnpm master:create` ก็ได้) — เก็บใน DB และ sync ทุกครั้งที่ start:
+  - ยังไม่มีในระบบ → insert username, email, password (hash ด้วย `alg`)
+  - มี username + email + alg เดิม และ password ตรง → เก็บไว้เหมือนเดิม
+  - password (หรือ username / email / alg) ไม่ตรง → ลบแล้ว insert ใหม่ + ตัด session master เดิมทั้งหมด
+  - login ตรวจกับที่เก็บใน DB ดังนั้นหลัง start ครั้งแรกจะลบ `MASTER_CREDENTIALS` ออกจาก `.env` ได้ (ไม่เหลือ password บน disk); ถูก disable อยู่ → เปลี่ยน password ก็ยัง disable ใช้ตั้งต้นจัดการ client ได้โดยไม่ต้องมี owner: เปิดหน้า `/manage` → username **หรือ** email + password → **ยืนยันทาง email** (`MASTER_EMAIL_VERIFICATION` = `otp` (default, รหัส 6 หลัก) | `link`) → ได้ session 1 ชั่วโมง; จัดการได้เฉพาะ `/admin/clients` และ `/admin/client-owners` (ไม่รวม users / secrets); ไม่ตั้ง = ปิด, ค่าผิดรูปแบบ = server ไม่ start
   ```bash
-  printf 'master:%s' "$(openssl rand -base64 24)" | base64   # ใส่ใน MASTER_CREDENTIALS
-  curl -H "Authorization: Basic $MASTER_CREDENTIALS" http://localhost:3000/admin/clients
+  printf 'admin:%s|admin@dev.com:argon2id' "$(openssl rand -base64 24)" | base64
+  echo "<>" | base64 -d
+  pnpm -s master:create admin admin@example.com            # ถาม password (≥ 16 ตัว, ไม่แสดงตอนพิมพ์) → พิมพ์ MASTER_CREDENTIALS=...
+  pnpm -s master:create admin admin@example.com bcrypt     # ใช้ bcrypt แทน argon2id
   ```
+  API: `POST /auth/master/login` `{username, password}` → `{ verify }` · `POST /auth/master/verify` `{challengeId, code}` (otp) หรือ poll `POST /auth/master/status` `{challengeId}` (link) → `{ access_token }` → `Authorization: Bearer …` กับ `/admin/clients`, `/admin/client-owners` · `POST /auth/master/logout`; ปิด master = session ทั้งหมดถูกตัดทันที
 - start ครั้งแรกสร้าง client `keyvault-web` (public) ของ UI ให้เอง: redirect `<WEBAUTHN_ORIGINS>/callback`, `initiate_login_uri` = origin แรก — env เก่า (`OAUTH_CLIENT_ID`, `OAUTH_REDIRECT_URIS`, `ACCESS_TOKEN_TTL`, `REFRESH_TOKEN_TTL`, `ID_TOKEN_TTL`, `EMAIL_VERIFICATION`) ยังถูกอ่านเป็นค่าตั้งต้นครั้งนั้นครั้งเดียว หลังจากนั้นแก้ใน Clients
 
 **ยืนยัน email (รหัส 6 หลัก หรือ link — ตั้งที่ client)**

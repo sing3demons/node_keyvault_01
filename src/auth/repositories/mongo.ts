@@ -90,6 +90,7 @@ export class MongoAuthRepository implements AuthRepository {
   private readonly emailChallenges$: Collection<Doc<EmailChallenge>>;
   private readonly devices$: Collection<Doc<Device>>;
   private readonly clients$: Collection<Doc<OAuthClient>>;
+  private readonly settings$: Collection<{ _id: string; value: unknown; updatedAt: Date }>;
   private readonly authRequests$: Collection<Doc<AuthRequest>>;
   private readonly authCodes$: Collection<Doc<AuthCode>>;
   private readonly access$: Collection<Doc<AccessToken>>;
@@ -111,6 +112,7 @@ export class MongoAuthRepository implements AuthRepository {
     this.emailChallenges$ = db.collection("email_challenges");
     this.devices$ = db.collection("devices");
     this.clients$ = db.collection("oauth_clients");
+    this.settings$ = db.collection("auth_settings");
     this.authRequests$ = db.collection("auth_requests");
     this.authCodes$ = db.collection("auth_codes");
     this.access$ = db.collection("access_tokens");
@@ -292,6 +294,16 @@ export class MongoAuthRepository implements AuthRepository {
       return res.matchedCount > 0;
     },
     delete: async (id: string) => (await this.clients$.deleteOne({ _id: id })).deletedCount > 0
+  };
+
+  readonly settings = {
+    get: async <T>(key: string) => ((await this.settings$.findOne({ _id: key }))?.value as T | undefined) ?? null,
+    set: async (key: string, value: unknown) => {
+      await this.settings$.updateOne({ _id: key }, { $set: { value, updatedAt: new Date() } }, { upsert: true });
+    },
+    delete: async (key: string) => {
+      await this.settings$.deleteOne({ _id: key });
+    }
   };
 
   readonly authRequests = {

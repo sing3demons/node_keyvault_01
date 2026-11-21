@@ -71,6 +71,20 @@
       "when": 1795275067196,
       "tag": "0009_client_credentials",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1795276326586,
+      "tag": "0010_client_owners",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1795277410856,
+      "tag": "0011_master_email_verification",
+      "breakpoints": true
     }
   ]
 }

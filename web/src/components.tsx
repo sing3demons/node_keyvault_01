@@ -3,6 +3,7 @@ import {
   api,
   userClientsApi,
   type ClientsApi,
+  type OwnersView,
   type GrantType,
   LANGUAGES,
   PERMISSIONS,
@@ -162,8 +163,8 @@ export function EmailCodeForm({ pending: initial, submitLabel, onConfirm, onPoll
       <div className="dlg-body">
         {onPoll ? (
           <p>
-            We sent a link to <strong>{pending.email}</strong>. Open it — on this or any other device — to confirm your
-            email address.
+            We sent a link to <strong>{pending.email}</strong>. Open it — on this or any other device — to{" "}
+            {pending.reason === "login" ? "finish signing in here" : "confirm your email address"}.
           </p>
         ) : (
           <p>
@@ -903,6 +904,7 @@ function UsersPanel({ currentUserId, onClose }: { currentUserId?: string; onClos
                   <input type="checkbox" checked={u.roles.includes("admin")} disabled={busy !== null} onChange={() => toggleAdmin(u)} />
                   Admin{u.id === currentUserId ? " (you)" : ""}
                 </label>
+                {u.roles.includes("client_admin") && <span className="badge">Client owner</span>}
               </div>
             ))}
           </div>
@@ -1053,8 +1055,39 @@ export function ClientsDialog({ open, onClose }: { open: boolean; onClose: () =>
   );
 }
 
-/** List / create / edit / rotate / delete clients, through `clientsApi` (admin user or master credential). */
-export function ClientsPanel({ clientsApi, onClose }: { clientsApi: ClientsApi; onClose?: () => void }) {
+/** Client administration: the clients, and who owns their management. */
+export function ClientsPanel({
+  clientsApi,
+  onClose,
+  onMasterDisabled
+}: {
+  clientsApi: ClientsApi;
+  onClose?: () => void;
+  /** The master disabled itself: its session is over. */
+  onMasterDisabled?: () => void;
+}) {
+  const [tab, setTab] = useState<"clients" | "owners">("clients");
+  return (
+    <div>
+      <div className="tabs">
+        <button type="button" className={tab === "clients" ? "active" : ""} onClick={() => setTab("clients")}>
+          Clients
+        </button>
+        <button type="button" className={tab === "owners" ? "active" : ""} onClick={() => setTab("owners")}>
+          Owners
+        </button>
+      </div>
+      {tab === "clients" ? (
+        <ClientList clientsApi={clientsApi} onClose={onClose} />
+      ) : (
+        <OwnersPanel clientsApi={clientsApi} onClose={onClose} onMasterDisabled={onMasterDisabled} />
+      )}
+    </div>
+  );
+}
+
+/** List / create / edit / rotate / delete clients, through `clientsApi` (owner or master credential). */
+function ClientList({ clientsApi, onClose }: { clientsApi: ClientsApi; onClose?: () => void }) {
   const [clients, setClients] = useState<OAuthClient[] | null>(null);
   const [editing, setEditing] = useState<OAuthClient | "new" | null>(null);
   /** Secret just issued: shown once. */
@@ -1383,5 +1416,165 @@ function ClientForm({
         </button>
       </div>
     </form>
+  );
+}
+
+/* ---------- owners of client management (client_admin) + master credential ---------- */
+
+function OwnersPanel({
+  clientsApi,
+  onClose,
+  onMasterDisabled
+}: {
+  clientsApi: ClientsApi;
+  onClose?: () => void;
+  onMasterDisabled?: () => void;
+}) {
+  const [view, setView] = useState<OwnersView | null>(null);
+  const [you, setYou] = useState<OwnersView["you"]>();
+  const [username, setUsername] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    clientsApi
+      .owners()
+      .then((v) => {
+        setView(v);
+        setYou(v.you);
+      })
+      .catch((e: Error) => setError(e.message));
+  }, [clientsApi]);
+
+  const act = async (fn: () => Promise<OwnersView>) => {
+    setBusy(true);
+    setError("");
+    try {
+      setView(await fn());
+      return true;
+    } catch (e) {
+      setError((e as Error).message);
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const add = async (event: FormEvent) => {
+    event.preventDefault();
+    if (await act(() => clientsApi.addOwner(username.trim()))) setUsername("");
+  };
+
+  const disableMaster = async () => {
+    const self = you?.kind === "master";
+    const ok = confirm(
+      "Disable the master credential? MASTER_CREDENTIALS will stop working even if it stays in the server's env." +
+        (self ? " You are signed in with it, so you will be signed out." : "")
+    );
+    if (ok && (await act(() => clientsApi.disableMaster())) && self) onMasterDisabled?.();
+  };
+
+  if (!view) {
+    return (
+      <div className="dlg-body">
+        {error ? <div className="error-text">{error}</div> : <div className="skeleton" />}
+      </div>
+    );
+  }
+
+  const { master, owners } = view;
+  const lastOwnerLocked = owners.length <= 1 && !master.enabled;
+
+  return (
+    <div>
+      <div className="dlg-body">
+        <h2>Owners</h2>
+        <p className="hint">
+          Users who may manage OAuth clients and their owners (role client_admin) — separate from the admin role, which manages
+          users and secrets.
+        </p>
+
+        <div className="device-row">
+          <div className="device-main">
+            <div>
+              <strong>Master credential</strong>
+              {master.username && (
+                <span className="hint">
+                  {" "}
+                  {master.username} · {master.email}
+                </span>
+              )}
+              {!master.configured ? (
+                <span className="badge">Not configured</span>
+              ) : master.enabled ? (
+                <span className="badge badge-warn">Active</span>
+              ) : (
+                <span className="badge badge-ok">Disabled</span>
+              )}
+              {you?.kind === "master" && <span className="badge">You</span>}
+            </div>
+            <div className="hint">
+              {master.enabled
+                ? owners.length === 0
+                  ? "MASTER_CREDENTIALS from the server env. Add an owner, then disable it so a leaked value is useless."
+                  : "MASTER_CREDENTIALS from the server env. Disable it now that an owner can take over."
+                : master.disabledAt
+                  ? `Disabled ${timeAgo(master.disabledAt)} by ${master.disabledBy}. Recovery on the server: pnpm master:enable`
+                  : "MASTER_CREDENTIALS is not set on the server."}
+            </div>
+          </div>
+          <div className="device-actions">
+            {master.enabled && (
+              <button
+                className="btn-danger"
+                disabled={busy || owners.length === 0}
+                title={owners.length === 0 ? "Add an owner first" : "Disable the master credential"}
+                onClick={disableMaster}
+              >
+                Disable
+              </button>
+            )}
+            {master.configured && !master.enabled && you?.kind === "user" && (
+              <button className="btn-ghost" disabled={busy} onClick={() => act(() => clientsApi.enableMaster())}>
+                Re-enable
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="grant-list">
+          {owners.length === 0 && <p className="hint">No owners yet.</p>}
+          {owners.map((o) => (
+            <div className="grant-row" key={o.id}>
+              <span className="mono">@{o.username}</span>
+              <span className="hint">{o.email ?? ""}</span>
+              {you?.kind === "user" && you.id === o.id && <span className="badge">You</span>}
+              <button
+                className="btn-ghost push-right"
+                disabled={busy || lastOwnerLocked}
+                title={lastOwnerLocked ? "The last owner cannot be removed while the master is disabled" : "Remove owner"}
+                onClick={() => confirm(`Remove @${o.username} as an owner?`) && act(() => clientsApi.removeOwner(o.username))}
+              >
+                <TrashIcon />
+              </button>
+            </div>
+          ))}
+          <form className="grant-row add" onSubmit={add}>
+            <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="username" required />
+            <button type="submit" className="btn-primary" disabled={busy || !username.trim()}>
+              Add owner
+            </button>
+          </form>
+        </div>
+        <div className="error-text">{error}</div>
+      </div>
+      {onClose && (
+        <div className="dlg-foot">
+          <button type="button" className="btn-ghost" onClick={onClose}>
+            Done
+          </button>
+        </div>
+      )}
+    </div>
   );
 }

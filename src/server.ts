@@ -10,6 +10,9 @@ import { createSecretAclRepository } from "./keyvault/repositories/index.js";
 import { createAuthRepository } from "./auth/repositories/index.js";
 import { AuthService, SUPPORTED_SCOPES } from "./auth/service.js";
 import { ClientService } from "./auth/clients.js";
+import { ClientOwnerService } from "./auth/client-owners.js";
+import { MasterAuthService } from "./auth/master.js";
+import { MasterAccountStore } from "./auth/master-account.js";
 import { IdTokenIssuer, SigningKeyRing } from "./auth/oidc.js";
 import { Argon2idHasher, SecretHasher } from "./shared/hashing.js";
 import { WebAuthnService } from "./auth/webauthn.js";
@@ -17,7 +20,7 @@ import { EmailCodeService } from "./auth/email-codes.js";
 import { DeviceService } from "./auth/devices.js";
 import { createMailer } from "./shared/mail.js";
 import { AuthController } from "./auth/controller.js";
-import { MasterCredential, requireAuth, requireRole, requireRoleOrMaster, type AuthEnv } from "./shared/middleware.js";
+import { requireAuth, requireRole, requireRoleOrMaster, type AuthEnv } from "./shared/middleware.js";
 
 async function main() {
   const azureVaultUrl: string = process.env.AZURE_KEYVAULT_URL as string;
@@ -68,6 +71,18 @@ async function main() {
     idTokenTtlSec: Math.min(config.clientDefaults.idTokenTtlSec, config.oidc.retiredKeyGraceSec),
     emailVerification: config.defaultClient.emailVerification
   });
+  // master account: stored in the DB, made to match MASTER_CREDENTIALS on every start
+  const masterAccounts = new MasterAccountStore(authRepo);
+  const masterSync = await masterAccounts.syncFromEnv(config.master);
+  const masterNote = {
+    created: "created from MASTER_CREDENTIALS",
+    kept: "matches MASTER_CREDENTIALS (kept)",
+    replaced: "MASTER_CREDENTIALS changed — replaced, old master sessions ended",
+    stored: "using the stored account (MASTER_CREDENTIALS is empty)",
+    none: "none"
+  }[masterSync];
+  console.log(`Master account: ${masterNote}`);
+  const clientOwners = new ClientOwnerService(authRepo, masterAccounts);
   const emailCodes = new EmailCodeService(
     authRepo,
     createMailer(config.mail),
@@ -84,8 +99,9 @@ async function main() {
     config.adminUsernames
   );
   await authService.bootstrapAdmins();
+  const masterAuth = new MasterAuthService(authRepo, emailCodes, clientOwners, masterAccounts, config.masterEmailVerification);
   const webAuthnService = new WebAuthnService(authRepo, config.webauthn);
-  const auth = new AuthController(authService, webAuthnService, idTokens, clients, config.webauthn.origins, config.trustProxy);
+  const auth = new AuthController(authService, webAuthnService, idTokens, clients, clientOwners, masterAuth, config.webauthn.origins, config.trustProxy);
   const bearer = requireAuth(authService);
 
   const app = new Hono<AuthEnv>();
@@ -136,11 +152,20 @@ async function main() {
   app.use("/admin/users/*", bearer, requireRole("admin"));
   app.get("/admin/users", (c) => auth.listUsers(c));
   app.put("/admin/users/:username/roles", (c) => auth.setUserRoles(c));
-  // OAuth clients (RFC 7591 metadata; RFC 7592-style read / update / delete):
-  // an admin user's Bearer token, or the master credential (MASTER_CREDENTIALS) as HTTP Basic
-  const clientAdmin = requireRoleOrMaster(authService, "admin", config.master);
-  app.use("/admin/clients", clientAdmin);
-  app.use("/admin/clients/*", clientAdmin);
+  // OAuth clients (RFC 7591 metadata; RFC 7592-style read / update / delete) and who owns them:
+  // a client_admin user's Bearer token, or the master credential (MASTER_CREDENTIALS) as HTTP Basic until disabled
+  // master sign-in: password, then a code / link to the master's email, then a session token
+  app.post("/auth/master/login", (c) => auth.masterLogin(c));
+  app.post("/auth/master/verify", (c) => auth.masterVerify(c));
+  app.post("/auth/master/status", (c) => auth.masterStatus(c));
+  app.post("/auth/master/logout", (c) => auth.masterLogout(c));
+  const clientAdmin = requireRoleOrMaster(authService, "client_admin", (token) => masterAuth.session(token));
+  for (const p of ["/admin/clients", "/admin/clients/*", "/admin/client-owners", "/admin/client-owners/*"]) app.use(p, clientAdmin);
+  app.get("/admin/client-owners", (c) => auth.listClientOwners(c));
+  app.post("/admin/client-owners/master/disable", (c) => auth.disableMaster(c));
+  app.post("/admin/client-owners/master/enable", (c) => auth.enableMaster(c));
+  app.put("/admin/client-owners/:username", (c) => auth.addClientOwner(c));
+  app.delete("/admin/client-owners/:username", (c) => auth.removeClientOwner(c));
   app.get("/admin/clients", (c) => auth.listClients(c));
   app.post("/admin/clients", (c) => auth.registerClient(c));
   app.get("/admin/clients/:id", (c) => auth.getClient(c));

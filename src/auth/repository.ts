@@ -104,6 +104,13 @@ export interface ClientRepository {
   delete(id: string): Promise<boolean>;
 }
 
+/** Server-wide settings: JSON values by key. */
+export interface SettingsRepository {
+  get<T>(key: string): Promise<T | null>;
+  set(key: string, value: unknown): Promise<void>;
+  delete(key: string): Promise<void>;
+}
+
 export interface AuthRequestRepository {
   create(req: AuthRequest): Promise<void>;
   findActive(id: string, now: Date): Promise<AuthRequest | null>;
@@ -142,6 +149,7 @@ export interface AuthRepository {
   readonly emailChallenges: EmailChallengeRepository;
   readonly devices: DeviceRepository;
   readonly clients: ClientRepository;
+  readonly settings: SettingsRepository;
   readonly authRequests: AuthRequestRepository;
   readonly authCodes: AuthCodeRepository;
   readonly tokens: TokenRepository;

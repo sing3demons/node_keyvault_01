@@ -21,7 +21,11 @@ export interface User {
   createdAt: Date;
 }
 
-export const ROLES = ["admin"] as const;
+/**
+ * "admin": users, secret ownership. "client_admin": owners of OAuth client management (clients and who else
+ * owns them) — kept apart so an admin account alone cannot take over the apps that sign users in.
+ */
+export const ROLES = ["admin", "client_admin"] as const;
 export type Role = (typeof ROLES)[number];
 
 /** Lightweight user row for admin listings (no profiles or credentials). */
@@ -158,7 +162,7 @@ export interface RefreshToken extends AccessToken {
  * "signin": a step of the login page, bound to an authorization request — confirming it signs the user in.
  * "verify": only proves the address (account page / API registration); confirming it signs nobody in.
  */
-export type EmailChallengePurpose = "signin" | "verify";
+export type EmailChallengePurpose = "signin" | "verify" | "master";
 /** Why the code was sent: picks the email wording and the sign-in method recorded for the device. */
 export type EmailChallengeReason = "register" | "verify_email" | "login";
 
@@ -177,7 +181,8 @@ export interface EmailChallenge {
   reason: EmailChallengeReason;
   /** Fixed when the challenge is created, so changing the config does not break pending ones. */
   method: EmailVerificationMethod;
-  userId: string;
+  /** Absent for "master" challenges (the master credential is not a user; see auth/master.ts). */
+  userId?: string;
   /** Address the code went to; it is marked verified only if the user still has this address. */
   email: string;
   /** OAuth client the user was signing in to (sign-in challenges): where an emailed link continues. */
@@ -236,6 +241,10 @@ export interface DeviceSignIn {
 }
 
 // ---------------------------------------------------------------- OAuth clients
+
+/** Master sign-in sessions are stored as access tokens of this (reserved, never registrable) client id. */
+export const MASTER_CLIENT_ID = "__master__";
+export const MASTER_SCOPE = "master";
 
 /** RFC 7591 §2 token_endpoint_auth_method: "none" = public client (PKCE only), else confidential. */
 export const TOKEN_ENDPOINT_AUTH_METHODS = ["none", "client_secret_basic", "client_secret_post"] as const;

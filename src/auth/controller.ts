@@ -3,6 +3,8 @@ import { getConnInfo } from "@hono/node-server/conninfo";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { randomToken } from "../shared/crypto.js";
 import type { ClientCredentials, ClientService } from "./clients.js";
+import type { Actor, ClientOwnerService } from "./client-owners.js";
+import type { MasterAuthService } from "./master.js";
 import type { DeviceContext } from "./devices.js";
 import type { MailContext } from "./email-codes.js";
 import { OAuthError } from "./oauth.js";
@@ -12,6 +14,9 @@ import {
   clientMetadataBody,
   emailLinkResumeBody,
   introspectBody,
+  masterCodeBody,
+  masterLoginBody,
+  masterStatusBody,
   credentialIdParam,
   emailCodeBody,
   emailLinkBody,
@@ -48,6 +53,8 @@ export class AuthController {
     private readonly webauthn: WebAuthnService,
     private readonly idTokens: IdTokenIssuer,
     private readonly clients: ClientService,
+    private readonly owners: ClientOwnerService,
+    private readonly masterAuth: MasterAuthService,
     /** Origins the login / account pages run on (WEBAUTHN_ORIGINS); emailed links open one of these. */
     private readonly uiOrigins: string[],
     /** Read the client IP from X-Forwarded-For (TRUST_PROXY). */
@@ -232,6 +239,68 @@ export class AuthController {
     const callerClientId = c.get("master") ? undefined : c.get("user").clientId;
     await this.clients.delete(parse(clientIdParam, c.req.param()).id, callerClientId);
     return c.body(null, 204);
+  }
+
+  // ================================================================ master sign-in (MASTER_CREDENTIALS + email)
+
+  /** POST /auth/master/login — { username, password } -> { verify } (code or link sent to the master's email) */
+  async masterLogin(c: Context) {
+    const { username, password } = await parseJsonBody(c, masterLoginBody);
+    return c.json(await this.masterAuth.login(username, password, this.mail(c)));
+  }
+
+  /** POST /auth/master/verify — { challengeId, code } -> { access_token, expires_in } */
+  async masterVerify(c: Context) {
+    c.header("Cache-Control", "no-store");
+    const { challengeId, code } = await parseJsonBody(c, masterCodeBody);
+    return c.json(await this.masterAuth.verifyCode(challengeId, code));
+  }
+
+  /** POST /auth/master/status — { challengeId } -> { pending } | { access_token, ... } (link opened) */
+  async masterStatus(c: Context) {
+    c.header("Cache-Control", "no-store");
+    const { challengeId } = await parseJsonBody(c, masterStatusBody);
+    return c.json(await this.masterAuth.status(challengeId));
+  }
+
+  /** POST /auth/master/logout (Bearer master session) */
+  async masterLogout(c: Context) {
+    await this.masterAuth.logout(/^Bearer\s+(\S+)$/i.exec(c.req.header("Authorization") ?? "")?.[1]);
+    return c.body(null, 204);
+  }
+
+  // ================================================================ client owners (client_admin or master)
+
+  /** GET /admin/client-owners -> { owners, master: { configured, enabled, disabledAt?, disabledBy? } } */
+  async listClientOwners(c: Context<AuthEnv>) {
+    return c.json({ ...(await this.owners.view()), you: this.actor(c) });
+  }
+
+  /** PUT /admin/client-owners/:username — give the client_admin role */
+  async addClientOwner(c: Context<AuthEnv>) {
+    return c.json(await this.owners.addOwner(parse(usernameParam, c.req.param()).username));
+  }
+
+  /** DELETE /admin/client-owners/:username — never the last one while the master is disabled */
+  async removeClientOwner(c: Context<AuthEnv>) {
+    return c.json(await this.owners.removeOwner(parse(usernameParam, c.req.param()).username));
+  }
+
+  /** POST /admin/client-owners/master/disable — needs another owner; MASTER_CREDENTIALS stops working */
+  async disableMaster(c: Context<AuthEnv>) {
+    return c.json(await this.owners.disableMaster(this.actor(c)));
+  }
+
+  /** POST /admin/client-owners/master/enable — owners only */
+  async enableMaster(c: Context<AuthEnv>) {
+    return c.json(await this.owners.enableMaster(this.actor(c)));
+  }
+
+  private actor(c: Context<AuthEnv>): Actor {
+    const master = c.get("master");
+    if (master) return { kind: "master", name: master.username };
+    const user = c.get("user");
+    return { kind: "user", id: user.id, username: user.username };
   }
 
   // ================================================================ devices (Bearer)

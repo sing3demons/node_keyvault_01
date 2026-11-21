@@ -1,7 +1,6 @@
 // Route middleware shared by every module. Depends only on the TokenAuthenticator contract,
 // so any module can protect its routes without importing the auth implementation.
 
-import { createHash, timingSafeEqual } from "node:crypto";
 import type { MiddlewareHandler } from "hono";
 import { HttpError } from "./http.js";
 
@@ -62,60 +61,21 @@ export function requireRole(role: string): MiddlewareHandler<AuthEnv> {
 }
 
 /**
- * Bootstrap credential for administration, from env as base64("username:password") — the same value an
- * HTTP Basic header carries. Lives outside the database, so it works before any admin user exists.
- */
-export class MasterCredential {
-  private constructor(
-    readonly username: string,
-    private readonly password: string
-  ) {}
-
-  /** null when unset; throws on a malformed or weak value so a typo cannot silently lock you out. */
-  static fromEnv(name: string, value: string | undefined): MasterCredential | null {
-    if (!value?.trim()) return null;
-    const decoded = Buffer.from(value.trim(), "base64").toString("utf8");
-    const sep = decoded.indexOf(":");
-    if (sep < 1 || Buffer.from(decoded, "utf8").toString("base64").replace(/=+$/, "") !== value.trim().replace(/=+$/, "")) {
-      throw new Error(`${name} must be base64("username:password"), e.g. $(printf 'master:long-random-password' | base64)`);
-    }
-    const password = decoded.slice(sep + 1);
-    if (password.length < 16) throw new Error(`${name}: the password must be at least 16 characters`);
-    return new MasterCredential(decoded.slice(0, sep), password);
-  }
-
-  /** `Authorization: Basic <base64(username:password)>`; compared in constant time. */
-  matches(authorization: string | undefined): boolean {
-    const m = /^Basic\s+([A-Za-z0-9+/=]+)$/i.exec(authorization ?? "");
-    if (!m) return false;
-    const decoded = Buffer.from(m[1]!, "base64").toString("utf8");
-    const sep = decoded.indexOf(":");
-    if (sep < 0) return false;
-    const same = (a: string, b: string) =>
-      timingSafeEqual(createHash("sha256").update(a).digest(), createHash("sha256").update(b).digest());
-    // evaluate both, so timing does not tell which part was wrong
-    const user = same(decoded.slice(0, sep), this.username);
-    const pass = same(decoded.slice(sep + 1), this.password);
-    return user && pass;
-  }
-}
-
-/**
- * Admin routes the master credential may also use: HTTP Basic with the master credential, else a Bearer
- * token of a user holding `role`. (No WWW-Authenticate: Basic challenge, so browsers never pop up a dialog.)
+ * Admin routes the master credential may also use: a master session token (from the master sign-in, which
+ * includes email verification), else a Bearer token of a user holding `role`.
  */
 export function requireRoleOrMaster(
   authenticator: TokenAuthenticator,
   role: string,
-  master: MasterCredential | null
+  masterSession: (accessToken: string) => Promise<{ username: string } | null>
 ): MiddlewareHandler<AuthEnv> {
   const bearer = requireAuth(authenticator);
   const hasRole = requireRole(role);
   return async (c, next) => {
-    const header = c.req.header("Authorization");
-    if (/^Basic\s/i.test(header ?? "")) {
-      if (!master || !master.matches(header)) throw new HttpError(401, "Invalid master credentials", "invalid_client");
-      c.set("master", { username: master.username });
+    const match = /^Bearer\s+([A-Za-z0-9_-]+)$/i.exec(c.req.header("Authorization") ?? "");
+    const master = match ? await masterSession(match[1]!) : null;
+    if (master) {
+      c.set("master", master);
       return next();
     }
     return bearer(c, async () => {

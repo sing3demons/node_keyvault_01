@@ -3,6 +3,7 @@
 // rules per secret type (length, attempt limits, ...) belong to the caller.
 
 import argon2 from "argon2";
+import bcrypt from "bcryptjs";
 import { randomToken } from "./crypto.js";
 
 /** New hashes use argon2id; other algorithms are only verified (then upgraded). */
@@ -44,6 +45,31 @@ export class Argon2idHasher implements SecretHashAlgorithm {
     return argon2.needsRehash(hash, this.options);
   }
 }
+
+/** bcrypt ($2a$ / $2b$ / $2y$), e.g. hashes from htpasswd -B or another system. */
+export class BcryptHasher implements SecretHashAlgorithm {
+  readonly algorithm = "bcrypt" as const;
+
+  constructor(private readonly cost = 12) {}
+
+  hash(secret: string): Promise<string> {
+    return bcrypt.hash(secret, this.cost);
+  }
+
+  verify(hash: string, secret: string): Promise<boolean> {
+    return bcrypt.compare(secret, hash).catch(() => false);
+  }
+
+  needsRehash(hash: string): boolean {
+    return bcrypt.getRounds(hash) < this.cost;
+  }
+}
+
+export const HASH_ALGORITHMS: readonly HashAlgorithm[] = ["argon2id", "bcrypt"];
+
+/** Hasher for a given algorithm (only these two exist). */
+export const hasherFor = (algorithm: HashAlgorithm): SecretHashAlgorithm =>
+  algorithm === "bcrypt" ? new BcryptHasher() : new Argon2idHasher();
 
 /**
  * Hashes new secrets with `primary`, and verifies hashes from `primary` or any `legacy` verifier

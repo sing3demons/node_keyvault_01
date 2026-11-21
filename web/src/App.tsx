@@ -137,7 +137,7 @@ export function App() {
               <UsersIcon /> <span className="label-text">Users</span>
             </button>
           )}
-          {account?.roles.includes("admin") && (
+          {account?.roles.includes("client_admin") && (
             <button className="btn-ghost" onClick={() => setClientsOpen(true)} title="OAuth clients (apps that sign users in here)">
               🧩 <span className="label-text">Clients</span>
             </button>

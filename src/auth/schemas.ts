@@ -247,6 +247,24 @@ export const revokeBody = z.object({
   client_secret: z.string().optional()
 });
 
+/** POST /auth/master/login — username or email + password */
+export const masterLoginBody = z.object({
+  username: z.string().trim().min(1).max(254),
+  password: z.string().min(1).max(256)
+});
+
+/** POST /auth/master/verify */
+export const masterCodeBody = z.object({
+  challengeId: nonEmpty.max(64),
+  code: z
+    .string()
+    .transform((v) => v.replace(/[\s-]/g, ""))
+    .pipe(z.string().regex(/^\d{6}$/, "code must be the 6 digits from the email"))
+});
+
+/** POST /auth/master/status */
+export const masterStatusBody = z.object({ challengeId: nonEmpty.max(64) });
+
 /** POST /auth/email/link/resume — the login page continuing an emailed sign-in link (kept in a cookie). */
 export const emailLinkResumeBody = z.object({ request_id: nonEmpty });
 

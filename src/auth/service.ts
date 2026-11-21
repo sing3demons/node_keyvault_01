@@ -13,6 +13,7 @@ import {
   displayProfile,
   isPassword,
   type AuthRequest,
+  MASTER_CLIENT_ID,
   type EmailChallenge,
   type OAuthClient,
   type LocalizedProfile,
@@ -143,10 +144,16 @@ export class AuthService implements TokenAuthenticator {
     return (await this.repo.users.list()).map(toUserView);
   }
 
-  /** Admin only (enforced by the route). The last admin cannot lose the role, so nobody gets locked out. */
+  /**
+   * Admin only (enforced by the route). The last admin cannot lose the role, so nobody gets locked out.
+   * client_admin is not an admin's to give or take (see ClientOwnerService): it is kept as it is.
+   */
   async setUserRoles(username: string, roles: Role[]): Promise<UserView> {
     const target = await this.repo.users.findByUsername(username.trim().toLowerCase());
     if (!target) throw new HttpError(404, `User "${username}" not found`);
+    if (roles.includes("client_admin") !== target.roles.includes("client_admin")) {
+      throw new HttpError(403, "client_admin is managed by client owners (Clients → Owners), not here", "access_denied");
+    }
     const next = [...new Set(roles)];
     if (target.roles.includes("admin") && !next.includes("admin")) {
       const admins = (await this.repo.users.list()).filter((u) => u.roles.includes("admin"));
@@ -237,7 +244,7 @@ export class AuthService implements TokenAuthenticator {
   ): Promise<{ redirect: string } | { verified: true }> {
     if (requestId !== undefined) await this.assertAuthRequest(requestId);
     const challenge = await this.emailCodes.check(challengeId, code, requestId);
-    await this.repo.users.markEmailVerified(challenge.userId, challenge.email, new Date());
+    await this.markVerified(challenge);
     return this.finishChallenge(challenge, requestId, device);
   }
 
@@ -262,8 +269,9 @@ export class AuthService implements TokenAuthenticator {
       return this.signInWithLink(challenge, requestId, device);
     }
     const challenge = await this.emailCodes.inspectLink(challengeId, token);
-    await this.repo.users.markEmailVerified(challenge.userId, challenge.email, new Date());
-    if (challenge.purpose === "verify") return { verified: true };
+    await this.markVerified(challenge);
+    // verify link: done; master link: approved, the /manage page waiting for it picks the sign-in up
+    if (challenge.purpose === "verify" || challenge.purpose === "master") return { verified: true };
 
     const client = challenge.clientId ? await this.clients.find(challenge.clientId) : null;
     if (client?.initiateLoginUri) {
@@ -294,9 +302,13 @@ export class AuthService implements TokenAuthenticator {
     return r;
   }
 
+  private async markVerified(challenge: EmailChallenge): Promise<void> {
+    if (challenge.userId) await this.repo.users.markEmailVerified(challenge.userId, challenge.email, new Date());
+  }
+
   private async signInWithLink(challenge: EmailChallenge, requestId: string, device: DeviceContext) {
-    await this.repo.users.markEmailVerified(challenge.userId, challenge.email, new Date());
-    return this.completeAuthRequest(requestId, challenge.userId, {
+    await this.markVerified(challenge);
+    return this.completeAuthRequest(requestId, challenge.userId!, {
       device,
       method: challenge.reason === "register" ? "registration" : "password+email_link"
     });
@@ -315,7 +327,7 @@ export class AuthService implements TokenAuthenticator {
   ): Promise<{ redirect: string } | { verified: true }> {
     if (challenge.purpose === "verify") return { verified: true };
     if (requestId === undefined || !device) throw new HttpError(400, "request_id is required for this code");
-    return this.completeAuthRequest(requestId, challenge.userId, {
+    return this.completeAuthRequest(requestId, challenge.userId!, {
       device,
       method: challenge.reason === "register" ? "registration" : "password+email_code"
     });
@@ -649,7 +661,8 @@ export class AuthService implements TokenAuthenticator {
     const access = await this.repo.tokens.findActiveAccess(hash, now);
     const refresh = access ? null : await this.repo.tokens.findRefresh(hash);
     const doc = access ?? (refresh && !refresh.revoked && refresh.expiresAt > now ? refresh : null);
-    if (!doc) return { active: false };
+    // master sessions are internal to this server
+    if (!doc || doc.clientId === MASTER_CLIENT_ID) return { active: false };
     const user = doc.userId ? await this.repo.users.findById(doc.userId) : null;
     if (doc.userId && !user) return { active: false };
     return {
@@ -685,8 +698,8 @@ export class AuthService implements TokenAuthenticator {
     const token = await this.repo.tokens.findActiveAccess(sha256(accessToken), new Date());
     if (!token) return null;
     if (!token.userId) {
-      // valid, but issued to a client (client_credentials): these endpoints act for a user
-      throw new HttpError(403, "This endpoint needs a user's access token, not a client_credentials token", "insufficient_scope");
+      // valid, but not a user's (client_credentials, master session): these endpoints act for a user
+      throw new HttpError(403, "This endpoint needs a user's access token", "insufficient_scope");
     }
     const user = await this.repo.users.findById(token.userId);
     if (!user) return null;

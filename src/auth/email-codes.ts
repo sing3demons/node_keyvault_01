@@ -72,7 +72,7 @@ export class EmailCodeService {
       purpose: EmailChallengePurpose;
       reason: EmailChallengeReason;
       method: EmailVerificationMethod;
-      userId: string;
+      userId?: string;
       email: string;
       authRequestId?: string;
       clientId?: string;
@@ -88,7 +88,7 @@ export class EmailCodeService {
       purpose: p.purpose,
       reason: p.reason,
       method,
-      userId: p.userId,
+      ...(p.userId !== undefined ? { userId: p.userId } : {}),
       email: p.email,
       codeHash: this.hash(id, code),
       attempts: 0,
@@ -131,9 +131,17 @@ export class EmailCodeService {
    * Checks a code and consumes the challenge on success. `authRequestId` must match what the challenge
    * was created for (a sign-in code cannot be used outside its login page, and vice versa).
    */
-  async check(challengeId: string, code: string, authRequestId?: string): Promise<EmailChallenge> {
+  async check(
+    challengeId: string,
+    code: string,
+    authRequestId?: string,
+    /** Which kinds this endpoint may consume (master codes only via the master sign-in, and vice versa). */
+    purposes: readonly EmailChallengePurpose[] = ["signin", "verify"]
+  ): Promise<EmailChallenge> {
     const stored = await this.repo.emailChallenges.findActive(challengeId, new Date());
-    if (!stored || (stored.authRequestId ?? null) !== (authRequestId ?? null)) throw this.gone();
+    if (!stored || !purposes.includes(stored.purpose) || (stored.authRequestId ?? null) !== (authRequestId ?? null)) {
+      throw this.gone();
+    }
     if (this.methodOf(stored) !== "code") throw new HttpError(400, "Open the link in the email instead", "invalid_code");
     await this.verifySecret(stored, code);
     // single use: of two concurrent correct submissions only one gets through
@@ -169,7 +177,8 @@ export class EmailCodeService {
    */
   async inspectLink(challengeId: string, token: string): Promise<EmailChallenge> {
     const stored = await this.findLink(challengeId);
-    if (stored.purpose === "verify") return this.approve(stored, token);
+    // verify / master: approve now; the page waiting for it notices (poll)
+    if (stored.purpose !== "signin") return this.approve(stored, token);
     await this.verifySecret(stored, token);
     return stored;
   }
@@ -191,9 +200,9 @@ export class EmailCodeService {
    * Account page: has the verify-only link been opened? Null while waiting; once approved the challenge is
    * consumed and returned. (Sign-in challenges are not polled: their link signs in where it is opened.)
    */
-  async poll(challengeId: string): Promise<EmailChallenge | null> {
+  async poll(challengeId: string, purpose: "verify" | "master" = "verify"): Promise<EmailChallenge | null> {
     const stored = await this.repo.emailChallenges.findActive(challengeId, new Date());
-    if (!stored || stored.purpose !== "verify") throw this.gone();
+    if (!stored || stored.purpose !== purpose) throw this.gone();
     if (!stored.approvedAt) return null;
     if (!(await this.repo.emailChallenges.consume(stored.id))) throw this.gone();
     return stored;
@@ -266,7 +275,8 @@ export class EmailCodeService {
   /** Sends the code / link. If the very first send fails the challenge is removed, since nobody can complete it. */
   private async deliver(c: EmailChallenge, secret: string, first: boolean, mail: MailContext): Promise<void> {
     const { ttlSec } = this.settings;
-    const appName = (c.clientId && (await this.clientName(c.clientId).catch(() => undefined))) || this.settings.appName;
+    const baseName = (c.clientId && (await this.clientName(c.clientId).catch(() => undefined))) || this.settings.appName;
+    const appName = c.purpose === "master" ? `${baseName} master` : baseName;
     const minutes = Math.round(ttlSec / 60);
     const expires = `It expires in ${minutes} minute${minutes === 1 ? "" : "s"}.`;
     const action = {
@@ -282,6 +292,7 @@ export class EmailCodeService {
     if (this.methodOf(c) === "link") {
       const params = new URLSearchParams({ id: c.id, token: secret });
       if (c.purpose === "signin") params.set("signin", "1"); // tells the page to start a sign-in first
+      if (c.purpose === "master") params.set("master", "1"); // approves a master sign-in waiting elsewhere
       const url = `${mail.uiOrigin}/verify-email?${params}`;
       subject = c.reason === "login" ? `Sign in to ${appName}` : `Confirm your email for ${appName}`;
       text = [`Open this link to ${action}:`, "", url, "", expires, "", ignore].join("\n");

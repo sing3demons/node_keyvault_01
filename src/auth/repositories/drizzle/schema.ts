@@ -2,10 +2,11 @@ import { sql } from "drizzle-orm";
 import {
   CLIENT_GRANT_TYPES,
   EMAIL_VERIFICATION_METHODS,
+  ROLES,
   SIGN_IN_METHODS,
   TOKEN_ENDPOINT_AUTH_METHODS
 } from "../../model.js";
-import { boolean, check, index, integer, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { boolean, check, jsonb, index, integer, pgTable, primaryKey, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 const ts = (name: string) => timestamp(name, { withTimezone: true, mode: "date" });
 
@@ -16,7 +17,7 @@ export const users = pgTable("users", {
   email: text("email").unique(),
   emailVerifiedAt: ts("email_verified_at"),
   preferredLang: text("preferred_lang"),
-  roles: text("roles", { enum: ["admin"] })
+  roles: text("roles", { enum: ROLES })
     .array()
     .notNull()
     .default(sql`'{}'::text[]`),
@@ -94,11 +95,11 @@ export const emailChallenges = pgTable(
   "email_challenges",
   {
     id: text("id").primaryKey(),
-    purpose: text("purpose", { enum: ["signin", "verify"] }).notNull(),
+    purpose: text("purpose", { enum: ["signin", "verify", "master"] }).notNull(),
     reason: text("reason", { enum: ["register", "verify_email", "login"] }).notNull(),
     method: text("method", { enum: ["code", "link"] }).notNull().default("code"),
+    // NULL for master sign-in challenges
     userId: uuid("user_id")
-      .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
     email: text("email").notNull(),
     clientId: text("client_id"),
@@ -150,6 +151,13 @@ export const oauthClients = pgTable("oauth_clients", {
   idTokenTtlSec: integer("id_token_ttl_sec").notNull(),
   emailVerification: text("email_verification", { enum: EMAIL_VERIFICATION_METHODS }).notNull(),
   createdAt: ts("created_at").notNull(),
+  updatedAt: ts("updated_at").notNull()
+});
+
+/** Small server-wide state kept in the database (e.g. whether the master credential was disabled). */
+export const authSettings = pgTable("auth_settings", {
+  key: text("key").primaryKey(),
+  value: jsonb("value").notNull(),
   updatedAt: ts("updated_at").notNull()
 });
 

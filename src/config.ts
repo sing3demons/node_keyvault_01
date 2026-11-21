@@ -1,5 +1,5 @@
 import dotenv from "dotenv";
-import { MasterCredential } from "./shared/middleware.js";
+import { parseMasterEnv, type MasterEnv } from "./auth/master-account.js";
 
 dotenv.config();
 
@@ -59,8 +59,10 @@ class Config {
     maxSends: number;
   };
 
-  /** MASTER_CREDENTIALS = base64("username:password"): manages OAuth clients (UI /manage, or HTTP Basic). */
-  master: MasterCredential | null;
+  /** MASTER_CREDENTIALS: manages OAuth clients and their owners (UI /manage, or /auth/master/* then Bearer). */
+  master: MasterEnv | null;
+  /** MASTER_EMAIL_VERIFICATION: otp (6-digit code, default) | link — the master sign-in's email step. */
+  masterEmailVerification: "code" | "link";
 
   /** Take the client IP from X-Forwarded-For (only behind a reverse proxy you control). */
   trustProxy: boolean;
@@ -128,7 +130,12 @@ class Config {
       maxSends: Number(process.env.EMAIL_CODE_MAX_SENDS ?? 5)
     };
 
-    this.master = MasterCredential.fromEnv("MASTER_CREDENTIALS", process.env.MASTER_CREDENTIALS);
+    this.master = parseMasterEnv("MASTER_CREDENTIALS", process.env.MASTER_CREDENTIALS);
+    const masterVerification = (process.env.MASTER_EMAIL_VERIFICATION ?? "otp").trim().toLowerCase();
+    if (!["otp", "code", "link"].includes(masterVerification)) {
+      throw new Error(`MASTER_EMAIL_VERIFICATION must be "otp" or "link", got "${masterVerification}"`);
+    }
+    this.masterEmailVerification = masterVerification === "link" ? "link" : "code";
 
     this.trustProxy = /^(1|true|yes)$/i.test(process.env.TRUST_PROXY ?? "");
 

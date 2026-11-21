@@ -32,6 +32,7 @@ const {
   emailChallenges,
   devices,
   oauthClients,
+  authSettings,
   authRequests,
   authCodes,
   accessTokens,
@@ -338,6 +339,21 @@ export class DrizzleAuthRepository implements AuthRepository {
     },
     delete: async (id: string) =>
       (await this.db.delete(oauthClients).where(eq(oauthClients.id, id)).returning({ id: oauthClients.id })).length > 0
+  };
+
+  readonly settings = {
+    get: async <T>(key: string) =>
+      ((await this.db.select().from(authSettings).where(eq(authSettings.key, key)))[0]?.value as T | undefined) ?? null,
+    set: async (key: string, value: unknown) => {
+      const updatedAt = new Date();
+      await this.db
+        .insert(authSettings)
+        .values({ key, value, updatedAt })
+        .onConflictDoUpdate({ target: authSettings.key, set: { value, updatedAt } });
+    },
+    delete: async (key: string) => {
+      await this.db.delete(authSettings).where(eq(authSettings.key, key));
+    }
   };
 
   readonly authRequests = {

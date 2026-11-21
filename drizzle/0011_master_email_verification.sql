@@ -1,0 +1,1 @@
+ALTER TABLE "email_challenges" ALTER COLUMN "user_id" DROP NOT NULL;

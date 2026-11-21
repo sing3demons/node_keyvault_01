@@ -4,7 +4,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { randomToken, sha256 } from "../shared/crypto.js";
 import { HttpError } from "../shared/http.js";
-import type { ClientGrantType, EmailVerificationMethod, OAuthClient, TokenEndpointAuthMethod } from "./model.js";
+import { MASTER_CLIENT_ID, type ClientGrantType, type EmailVerificationMethod, type OAuthClient, type TokenEndpointAuthMethod } from "./model.js";
 import { OAuthError } from "./oauth.js";
 import { DuplicateKeyError, type AuthRepository } from "./repository.js";
 import type { ClientMetadataBody } from "./schemas.js";
@@ -95,6 +95,9 @@ export class ClientService {
     const now = new Date();
     const fields = this.fromMetadata(body);
     const secret = fields.tokenEndpointAuthMethod !== "none" ? randomToken() : undefined;
+    if (body.client_id === MASTER_CLIENT_ID) {
+      throw new HttpError(400, `client_id "${MASTER_CLIENT_ID}" is reserved`, "invalid_client_metadata");
+    }
     const client: OAuthClient = {
       id: body.client_id ?? randomToken(16),
       ...fields,

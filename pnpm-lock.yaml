@@ -20,6 +20,9 @@ importers:
       argon2:
         specifier: ^0.45.2
         version: 0.45.2
+      bcryptjs:
+        specifier: ^3.0.3
+        version: 3.0.3
       dotenv:
         specifier: ^17.2.3
         version: 17.4.2
@@ -847,6 +850,10 @@ packages:
   asn1js@4.0.0:
     resolution: {integrity: sha512-81NlooYbXCbBWL2+p1/ivGyT4AR2+bnfKYlPq/3rCoIPJSuLbdS8G70XYt561wOJnbaYfBS2HQDMENaX5hM2vA==}
     engines: {node: ^20.19.0 || >=22.12.0}
+
+  bcryptjs@3.0.3:
+    resolution: {integrity: sha512-GlF5wPWnSa/X5LKM1o0wz0suXIINz1iHRLvTS+sLyi7XPbe5ycmYI3DlZqVGZZtDgl4DmasFg7gOB3JYbphV5g==}
+    hasBin: true
 
   bson@7.3.4:
     resolution: {integrity: sha512-eb33j2Ha6xgygjJ8bhI3sYaI9cLAbSaopZLRJQ5/rxk32XyBSoVVcbeHIzVGJx1SyQpyyoElkoEZgQrg+RVVoA==}
@@ -2041,6 +2048,8 @@ snapshots:
   asn1js@4.0.0:
     dependencies:
       '@peculiar/utils': 4.1.1
+
+  bcryptjs@3.0.3: {}
 
   bson@7.3.4: {}
 

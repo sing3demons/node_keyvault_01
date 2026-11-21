@@ -280,6 +280,7 @@ export function VerifyEmailPage() {
   const id = q.get("id");
   const token = q.get("token");
   const signIn = q.get("signin") === "1";
+  const forMaster = q.get("master") === "1";
   const [state, setState] = useState<"ready" | "busy" | "error" | "verified">("ready");
   const [error, setError] = useState("");
 
@@ -310,9 +311,13 @@ export function VerifyEmailPage() {
 
   if (state === "verified") {
     return (
-      <Shell title="Email verified" sub="Key Vault Secrets">
+      <Shell title={forMaster ? "Sign-in approved" : "Email verified"} sub="Key Vault Secrets">
         <div className="dlg-body">
-          <p>Your email address is confirmed. You can close this tab.</p>
+          <p>
+            {forMaster
+              ? "Go back to the master sign-in window — it continues by itself. You can close this tab."
+              : "Your email address is confirmed. You can close this tab."}
+          </p>
         </div>
       </Shell>
     );
