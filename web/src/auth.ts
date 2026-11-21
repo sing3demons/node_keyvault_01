@@ -194,8 +194,8 @@ async function postJson<T>(path: string, body: unknown, bearer?: string): Promis
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (bearer) headers.Authorization = `Bearer ${bearer}`;
   const res = await fetch(path, { method: "POST", headers, body: JSON.stringify(body) });
-  const json = (await res.json().catch(() => ({}))) as { message?: string };
-  if (!res.ok) throw new Error(json.message ?? `Request failed (${res.status})`);
+  const json = (await res.json().catch(() => ({}))) as { error?: string; error_description?: string };
+  if (!res.ok) throw new Error(json.error_description ?? json.error ?? `Request failed (${res.status})`);
   return json as T;
 }
 

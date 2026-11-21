@@ -1,15 +1,55 @@
+import { randomUUID } from "node:crypto";
+import type { HashAlgorithm } from "../../shared/hashing.js";
 import { MongoClient, ObjectId, type Collection, type Db, type Document } from "mongodb";
-import {
-  DuplicateKeyError,
-  type AccessToken,
-  type AuthCode,
-  type AuthRepository,
-  type AuthRequest,
-  type RefreshToken,
-  type User,
-  type WebAuthnChallenge,
-  type WebAuthnCredential
-} from "../repository.js";
+import type {
+  Credential,
+  AccessToken,
+  AuthCode,
+  AuthRequest,
+  RefreshToken,
+  User,
+  WebAuthnChallenge,
+  WebAuthnCredential
+} from "../model.js";
+import { DuplicateKeyError, type AuthRepository } from "../repository.js";
+
+// ---------------------------------------------------------------- document <-> domain mapping
+
+/**
+ * Users are stored as one document with credentials embedded:
+ *   { _id, username, createdAt, credentials: [{ id, type, key, value?, algorithm?, webauthn?, createdAt, lastUsedAt? }] }
+ * `key` is storage-only and backs a unique multikey index:
+ *   "<secretType>:<userId>" (one password / pin / ... per user) | "webauthn:<credId>" (credId globally unique).
+ * (A unique index on credentials.webauthn.credId would collide on the null produced by password entries.)
+ */
+type CredentialElement = Credential & { key: string };
+type UserDoc = Omit<User, "id" | "credentials"> & { _id: string; credentials: CredentialElement[] };
+
+const credentialKey = (userId: string, c: Credential) =>
+  c.type === "webauthn" ? `webauthn:${c.webauthn.credId}` : `${c.type}:${userId}`; // one secret of each type per user
+
+const toElement = (userId: string, c: Credential): CredentialElement => {
+  const el: Record<string, unknown> = { key: credentialKey(userId, c) };
+  for (const [k, v] of Object.entries(c)) if (v !== undefined) el[k] = v;
+  return el as unknown as CredentialElement;
+};
+
+const fromElement = ({ key: _key, ...rest }: CredentialElement): Credential => {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(rest)) if (v !== null) out[k] = v;
+  return out as unknown as Credential;
+};
+
+const userFromDoc = (doc: Document | null): User | null => {
+  if (!doc) return null;
+  const id = doc._id instanceof ObjectId ? doc._id.toHexString() : String(doc._id);
+  return {
+    id,
+    username: doc.username,
+    createdAt: doc.createdAt,
+    credentials: ((doc.credentials ?? []) as CredentialElement[]).map(fromElement)
+  };
+};
 
 type Doc<T extends { id: string }> = Omit<T, "id"> & { _id: string };
 
@@ -28,28 +68,10 @@ const fromDoc = <T extends { id: string }>(doc: Document | null): T | null => {
   return out as T;
 };
 
-/**
- * Ids are strings (UUID) now; documents written by the earlier Mongo-only version used ObjectId.
- * Match either form so existing users/passkeys keep working.
- */
-const anyId = (id: string): string =>
-  (/^[0-9a-f]{24}$/i.test(id) ? { $in: [id, new ObjectId(id)] } : id) as unknown as string;
-
-const isDuplicate = (error: unknown) => (error as { code?: number }).code === 11000;
-
-async function insert<T extends { id: string }>(col: Collection<Doc<T>>, value: T, what: string) {
-  try {
-    await col.insertOne(toDoc(value) as never);
-  } catch (error) {
-    if (isDuplicate(error)) throw new DuplicateKeyError(`${what} already exists`);
-    throw error;
-  }
-}
-
 /** MongoDB (native driver) implementation. Uses TTL indexes for expiry. */
 export class MongoAuthRepository implements AuthRepository {
-  private readonly users$: Collection<Doc<User>>;
-  private readonly credentials$: Collection<Doc<WebAuthnCredential>>;
+  private readonly db: Db;
+  private readonly users$: Collection<UserDoc>;
   private readonly challenges$: Collection<Doc<WebAuthnChallenge>>;
   private readonly authRequests$: Collection<Doc<AuthRequest>>;
   private readonly authCodes$: Collection<Doc<AuthCode>>;
@@ -66,8 +88,8 @@ export class MongoAuthRepository implements AuthRepository {
     private readonly client: MongoClient,
     db: Db
   ) {
+    this.db = db;
     this.users$ = db.collection("users");
-    this.credentials$ = db.collection("webauthn_credentials");
     this.challenges$ = db.collection("webauthn_challenges");
     this.authRequests$ = db.collection("auth_requests");
     this.authCodes$ = db.collection("auth_codes");
@@ -76,35 +98,78 @@ export class MongoAuthRepository implements AuthRepository {
   }
 
   readonly users = {
-    create: (user: User) => insert(this.users$, user, "Username"),
-    findById: async (id: string) => fromDoc<User>(await this.users$.findOne({ _id: anyId(id) })),
-    findByUsername: async (username: string) => fromDoc<User>(await this.users$.findOne({ username })),
-    updatePasswordHash: async (id: string, passwordHash: string) => {
-      await this.users$.updateOne({ _id: anyId(id) }, { $set: { passwordHash } });
+    create: async (user: User) => {
+      const doc: UserDoc = {
+        _id: user.id,
+        username: user.username,
+        createdAt: user.createdAt,
+        credentials: user.credentials.map((c) => toElement(user.id, c))
+      };
+      try {
+        await this.users$.insertOne(doc);
+      } catch (error) {
+        if (this.isDuplicate(error)) throw new DuplicateKeyError("Username already exists");
+        throw error;
+      }
+    },
+    findById: async (id: string) => userFromDoc(await this.users$.findOne({ _id: this.byId(id) })),
+    findByUsername: async (username: string) => userFromDoc(await this.users$.findOne({ username })),
+    findByWebAuthnCredId: async (credId: string) => {
+      const user = userFromDoc(await this.users$.findOne({ "credentials.key": `webauthn:${credId}` }));
+      const credential = user?.credentials.find(
+        (c): c is WebAuthnCredential => c.type === "webauthn" && c.webauthn.credId === credId
+      );
+      return user && credential ? { user, credential } : null;
+    },
+    addCredential: async (userId: string, credential: Credential) => {
+      const element = toElement(userId, credential);
+      try {
+        // The unique index only spans documents; `$ne` also blocks a duplicate key inside this user's own array
+        // (e.g. a second password, or the same passkey twice).
+        const res = await this.users$.updateOne(
+          { _id: this.byId(userId), "credentials.key": { $ne: element.key } },
+          { $push: { credentials: element } }
+        );
+        if (res.matchedCount === 0 && (await this.users$.countDocuments({ _id: this.byId(userId) })) > 0) {
+          throw new DuplicateKeyError("Credential already exists");
+        }
+      } catch (error) {
+        if (this.isDuplicate(error)) throw new DuplicateKeyError("Credential already exists");
+        throw error;
+      }
+    },
+    updateSecret: async (userId: string, credentialId: string, value: string, algorithm: HashAlgorithm) => {
+      await this.users$.updateOne(
+        { _id: this.byId(userId), "credentials.id": credentialId },
+        { $set: { "credentials.$.value": value, "credentials.$.algorithm": algorithm } }
+      );
+    },
+    recordWebAuthnUse: async (userId: string, credentialId: string, counter: number, usedAt: Date) => {
+      await this.users$.updateOne(
+        { _id: this.byId(userId), "credentials.id": credentialId },
+        { $set: { "credentials.$.webauthn.counter": counter, "credentials.$.lastUsedAt": usedAt } }
+      );
+    },
+    removeCredential: async (userId: string, credentialId: string) => {
+      // single atomic update: only pull when at least 2 credentials exist
+      const res = await this.users$.updateOne(
+        { _id: this.byId(userId), "credentials.id": credentialId, "credentials.1": { $exists: true } },
+        { $pull: { credentials: { id: credentialId } } }
+      );
+      if (res.modifiedCount > 0) return "removed" as const;
+      const exists = await this.users$.countDocuments({ _id: this.byId(userId), "credentials.id": credentialId });
+      return exists ? ("last_credential" as const) : ("not_found" as const);
     }
   };
 
-  readonly credentials = {
-    create: (cred: WebAuthnCredential) => insert(this.credentials$, cred, "Passkey"),
-    findByCredId: async (credId: string) => fromDoc<WebAuthnCredential>(await this.credentials$.findOne({ credId })),
-    listByUser: async (userId: string) =>
-      (await this.credentials$.find({ userId: anyId(userId) }).sort({ createdAt: 1 }).toArray()).map(
-        (d) => fromDoc<WebAuthnCredential>(d)!
-      ),
-    recordUse: async (id: string, counter: number, usedAt: Date) => {
-      await this.credentials$.updateOne({ _id: anyId(id) }, { $set: { counter, lastUsedAt: usedAt } });
-    },
-    delete: async (userId: string, id: string) => (await this.credentials$.deleteOne({ _id: anyId(id), userId: anyId(userId) })).deletedCount > 0
-  };
-
   readonly challenges = {
-    create: (c: WebAuthnChallenge) => insert(this.challenges$, c, "Challenge"),
+    create: (c: WebAuthnChallenge) => this.insert(this.challenges$, c, "Challenge"),
     consume: async (id: string, type: WebAuthnChallenge["type"]) =>
       fromDoc<WebAuthnChallenge>(await this.challenges$.findOneAndDelete({ _id: id, type }))
   };
 
   readonly authRequests = {
-    create: (r: AuthRequest) => insert(this.authRequests$, r, "Authorization request"),
+    create: (r: AuthRequest) => this.insert(this.authRequests$, r, "Authorization request"),
     findActive: async (id: string, now: Date) =>
       fromDoc<AuthRequest>(await this.authRequests$.findOne({ _id: id, expiresAt: { $gt: now } })),
     consumeActive: async (id: string, now: Date) =>
@@ -112,7 +177,7 @@ export class MongoAuthRepository implements AuthRepository {
   };
 
   readonly authCodes = {
-    create: (c: AuthCode) => insert(this.authCodes$, c, "Authorization code"),
+    create: (c: AuthCode) => this.insert(this.authCodes$, c, "Authorization code"),
     redeem: async (id: string) =>
       fromDoc<AuthCode>(await this.authCodes$.findOneAndUpdate({ _id: id, used: false }, { $set: { used: true } })),
     find: async (id: string) => fromDoc<AuthCode>(await this.authCodes$.findOne({ _id: id }))
@@ -120,7 +185,7 @@ export class MongoAuthRepository implements AuthRepository {
 
   readonly tokens = {
     createPair: async (access: AccessToken, refresh: RefreshToken) => {
-      await Promise.all([insert(this.access$, access, "Access token"), insert(this.refresh$, refresh, "Refresh token")]);
+      await Promise.all([this.insert(this.access$, access, "Access token"), this.insert(this.refresh$, refresh, "Refresh token")]);
     },
     findActiveAccess: async (id: string, now: Date) =>
       fromDoc<AccessToken>(await this.access$.findOne({ _id: id, expiresAt: { $gt: now } })),
@@ -137,11 +202,14 @@ export class MongoAuthRepository implements AuthRepository {
   };
 
   async init(): Promise<void> {
+    await this.migrateLegacyUsers();
     const ttl = { expireAfterSeconds: 0 };
     await Promise.all([
       this.users$.createIndex({ username: 1 }, { unique: true }),
-      this.credentials$.createIndex({ credId: 1 }, { unique: true }),
-      this.credentials$.createIndex({ userId: 1 }),
+      this.users$.createIndex(
+        { "credentials.key": 1 },
+        { unique: true, partialFilterExpression: { "credentials.key": { $exists: true } } }
+      ),
       this.challenges$.createIndex({ expiresAt: 1 }, ttl),
       this.authRequests$.createIndex({ expiresAt: 1 }, ttl),
       this.authCodes$.createIndex({ expiresAt: 1 }, ttl),
@@ -152,11 +220,83 @@ export class MongoAuthRepository implements AuthRepository {
     ]);
   }
 
+  /**
+   * One-time, idempotent upgrade from the earlier layout:
+   *   users.passwordHash            -> credentials[{ type: "password", algorithm: "argon2id" }]
+   *   webauthn_credentials (coll.)  -> credentials[{ type: "webauthn", webauthn: {...} }]
+   */
+  private async migrateLegacyUsers(): Promise<void> {
+    const legacy = this.users$ as unknown as Collection<Document>;
+    for await (const u of legacy.find({ passwordHash: { $exists: true } })) {
+      const userId = u._id instanceof ObjectId ? u._id.toHexString() : String(u._id);
+      const password: Credential = {
+        id: randomUUID(),
+        type: "password",
+        value: u.passwordHash,
+        algorithm: (u.passwordHash as string).startsWith("$argon2") ? "argon2id" : "bcrypt",
+        createdAt: u.createdAt ?? new Date()
+      };
+      await legacy.updateOne(
+        { _id: u._id, passwordHash: { $exists: true } },
+        { $push: { credentials: toElement(userId, password) }, $unset: { passwordHash: "" } } as never
+      );
+    }
+
+    const oldCreds = this.db.collection<Document>("webauthn_credentials");
+    for await (const c of oldCreds.find({})) {
+      const userId = c.userId instanceof ObjectId ? c.userId.toHexString() : String(c.userId);
+      const passkey: Credential = {
+        id: c._id instanceof ObjectId ? c._id.toHexString() : String(c._id),
+        type: "webauthn",
+        webauthn: {
+          credId: c.credId,
+          publicKeyPem: c.publicKeyPem,
+          counter: c.counter ?? 0,
+          transports: c.transports ?? undefined,
+          name: c.name ?? "Passkey"
+        },
+        createdAt: c.createdAt ?? new Date(),
+        lastUsedAt: c.lastUsedAt ?? undefined
+      };
+      await legacy.updateOne(
+        { _id: this.byId(userId) as never, "credentials.key": { $ne: credentialKey(userId, passkey) } },
+        { $push: { credentials: toElement(userId, passkey) } } as never
+      );
+      await oldCreds.deleteOne({ _id: c._id });
+    }
+    if ((await this.db.listCollections({ name: "webauthn_credentials" }).toArray()).length > 0) {
+      if ((await oldCreds.countDocuments()) === 0) await oldCreds.drop();
+    }
+  }
+
   async purgeExpired(): Promise<void> {
     // TTL indexes handle expiry
   }
 
   async close(): Promise<void> {
     await this.client.close();
+  }
+
+  // ---------------------------------------------------------------- query helpers
+
+  /**
+   * Ids are strings (UUID) now; documents written by the earlier Mongo-only version used ObjectId.
+   * Match either form so existing users/passkeys keep working.
+   */
+  private byId(id: string): string {
+    return (/^[0-9a-f]{24}$/i.test(id) ? { $in: [id, new ObjectId(id)] } : id) as unknown as string;
+  }
+
+  private isDuplicate(error: unknown): boolean {
+    return (error as { code?: number }).code === 11000;
+  }
+
+  private async insert<T extends { id: string }>(col: Collection<Doc<T>>, value: T, what: string): Promise<void> {
+    try {
+      await col.insertOne(toDoc(value) as never);
+    } catch (error) {
+      if (this.isDuplicate(error)) throw new DuplicateKeyError(`${what} already exists`);
+      throw error;
+    }
   }
 }

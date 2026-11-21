@@ -1,30 +1,50 @@
-import { boolean, index, integer, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { boolean, check, index, integer, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 
 const ts = (name: string) => timestamp(name, { withTimezone: true, mode: "date" });
 
 export const users = pgTable("users", {
   id: uuid("id").primaryKey(),
   username: text("username").notNull().unique(),
-  passwordHash: text("password_hash").notNull(),
   createdAt: ts("created_at").notNull()
 });
 
-export const webauthnCredentials = pgTable(
-  "webauthn_credentials",
+/**
+ * One row per credential (User.credentials[]). Columns are grouped by type;
+ * CHECK constraints make sure each type carries its required fields.
+ */
+export const userCredentials = pgTable(
+  "user_credentials",
   {
     id: uuid("id").primaryKey(),
     userId: uuid("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
-    credId: text("cred_id").notNull().unique(),
-    publicKeyPem: text("public_key_pem").notNull(),
-    counter: integer("counter").notNull().default(0),
-    transports: text("transports").array(),
-    name: text("name").notNull(),
+    type: text("type", { enum: ["password", "webauthn"] }).notNull(),
+    // secret types (password, later pin, ...): hash + algorithm
+    value: text("value"),
+    algorithm: text("algorithm", { enum: ["argon2id", "bcrypt"] }),
+    // type = webauthn
+    credId: text("webauthn_cred_id").unique(),
+    publicKeyPem: text("webauthn_public_key_pem"),
+    counter: integer("webauthn_counter"),
+    transports: text("webauthn_transports").array(),
+    name: text("webauthn_name"),
+
     createdAt: ts("created_at").notNull(),
     lastUsedAt: ts("last_used_at")
   },
-  (t) => [index("webauthn_credentials_user_id_idx").on(t.userId)]
+  (t) => [
+    index("user_credentials_user_id_idx").on(t.userId),
+    // at most one password per user (add a similar index when adding another secret type)
+    uniqueIndex("user_credentials_one_password_idx").on(t.userId).where(sql`${t.type} = 'password'`),
+    check(
+      "user_credentials_shape",
+      sql`(${t.type} = 'password' AND ${t.value} IS NOT NULL AND ${t.algorithm} IS NOT NULL)
+       OR (${t.type} = 'webauthn' AND ${t.credId} IS NOT NULL AND ${t.publicKeyPem} IS NOT NULL
+           AND ${t.counter} IS NOT NULL AND ${t.name} IS NOT NULL)`
+    )
+  ]
 );
 
 export const webauthnChallenges = pgTable(

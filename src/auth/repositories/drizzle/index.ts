@@ -1,25 +1,62 @@
-import { and, asc, eq, gt, lt } from "drizzle-orm";
+import { and, asc, count, eq, gt, lt, ne } from "drizzle-orm";
+import type { HashAlgorithm } from "../../../shared/hashing.js";
 import { drizzle, type NodePgDatabase } from "drizzle-orm/node-postgres";
 import { migrate } from "drizzle-orm/node-postgres/migrator";
 import { Pool } from "pg";
-import {
-  DuplicateKeyError,
-  type AccessToken,
-  type AuthCode,
-  type AuthRepository,
-  type AuthRequest,
-  type RefreshToken,
-  type User,
-  type WebAuthnChallenge,
-  type WebAuthnCredential
-} from "../../repository.js";
+import type {
+  Credential,
+  AccessToken,
+  AuthCode,
+  AuthRequest,
+  RefreshToken,
+  User,
+  WebAuthnChallenge,
+  WebAuthnCredential
+} from "../../model.js";
+import { DuplicateKeyError, type AuthRepository } from "../../repository.js";
 import * as schema from "./schema.js";
 
-const { users, webauthnCredentials, webauthnChallenges, authRequests, authCodes, accessTokens, refreshTokens } = schema;
+const { users, userCredentials, webauthnChallenges, authRequests, authCodes, accessTokens, refreshTokens } = schema;
 
 type Db = NodePgDatabase<typeof schema>;
+// ---------------------------------------------------------------- row <-> domain mapping
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+type CredentialRow = typeof userCredentials.$inferSelect;
+type CredentialInsert = typeof userCredentials.$inferInsert;
+
+/** Domain credential -> flat row (columns of the other type stay NULL). */
+function toRow(userId: string, c: Credential): CredentialInsert {
+  const base = { id: c.id, userId, type: c.type, createdAt: c.createdAt, lastUsedAt: c.lastUsedAt };
+  if (c.type !== "webauthn") return { ...base, value: c.value, algorithm: c.algorithm };
+  const w = c.webauthn;
+  return {
+    ...base,
+    credId: w.credId,
+    publicKeyPem: w.publicKeyPem,
+    counter: w.counter,
+    transports: w.transports,
+    name: w.name
+  };
+}
+
+/** Flat row -> domain credential. */
+function fromRow(r: CredentialRow): Credential {
+  const base = { id: r.id, createdAt: r.createdAt, ...(r.lastUsedAt ? { lastUsedAt: r.lastUsedAt } : {}) };
+  if (r.type !== "webauthn") {
+    return { ...base, type: r.type, value: r.value!, algorithm: r.algorithm! };
+  }
+  return {
+    ...base,
+    type: "webauthn",
+    webauthn: {
+      credId: r.credId!,
+      publicKeyPem: r.publicKeyPem!,
+      counter: r.counter!,
+      ...(r.transports ? { transports: r.transports } : {}),
+      name: r.name!
+    }
+  };
+}
 
 /** SQL NULL -> undefined so rows match the domain types. */
 const clean = <T>(row: Record<string, unknown> | undefined): T | null => {
@@ -29,23 +66,9 @@ const clean = <T>(row: Record<string, unknown> | undefined): T | null => {
   return out as T;
 };
 
-/** Postgres unique_violation, possibly wrapped by DrizzleQueryError. */
-const isDuplicate = (error: unknown): boolean => {
-  const e = error as { code?: string; cause?: { code?: string } };
-  return e.code === "23505" || e.cause?.code === "23505";
-};
-
-async function insert(what: string, run: () => Promise<unknown>): Promise<void> {
-  try {
-    await run();
-  } catch (error) {
-    if (isDuplicate(error)) throw new DuplicateKeyError(`${what} already exists`);
-    throw error;
-  }
-}
-
 /** PostgreSQL implementation via Drizzle ORM (node-postgres driver). */
 export class DrizzleAuthRepository implements AuthRepository {
+  private static readonly UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   private readonly db: Db;
 
   static connect(connectionString: string, migrationsFolder: string): DrizzleAuthRepository {
@@ -60,44 +83,78 @@ export class DrizzleAuthRepository implements AuthRepository {
   }
 
   readonly users = {
-    create: (user: User) => insert("Username", () => this.db.insert(users).values(user)),
-    findById: async (id: string) => clean<User>((await this.db.select().from(users).where(eq(users.id, id)))[0]),
+    create: (user: User) =>
+      this.insert("Username", () =>
+        this.db.transaction(async (tx) => {
+          await tx.insert(users).values({ id: user.id, username: user.username, createdAt: user.createdAt });
+          if (user.credentials.length > 0) {
+            await tx.insert(userCredentials).values(user.credentials.map((c) => toRow(user.id, c)));
+          }
+        })
+      ),
+    findById: async (id: string) => {
+      if (!this.isUuid(id)) return null; // uuid column would reject other formats
+      return this.loadUser((await this.db.select().from(users).where(eq(users.id, id)))[0]);
+    },
     findByUsername: async (username: string) =>
-      clean<User>((await this.db.select().from(users).where(eq(users.username, username)))[0]),
-    updatePasswordHash: async (id: string, passwordHash: string) => {
-      await this.db.update(users).set({ passwordHash }).where(eq(users.id, id));
+      this.loadUser((await this.db.select().from(users).where(eq(users.username, username)))[0]),
+    findByWebAuthnCredId: async (credId: string) => {
+      const row = (await this.db.select().from(userCredentials).where(eq(userCredentials.credId, credId)))[0];
+      if (!row) return null;
+      const user = await this.users.findById(row.userId);
+      const credential = user?.credentials.find((c): c is WebAuthnCredential => c.id === row.id && c.type === "webauthn");
+      return user && credential ? { user, credential } : null;
+    },
+    addCredential: (userId: string, credential: Credential) =>
+      this.insert("Credential", () => this.db.insert(userCredentials).values(toRow(userId, credential))),
+    updateSecret: async (userId: string, credentialId: string, value: string, algorithm: HashAlgorithm) => {
+      await this.db
+        .update(userCredentials)
+        .set({ value, algorithm })
+        .where(
+          and(eq(userCredentials.id, credentialId), eq(userCredentials.userId, userId), ne(userCredentials.type, "webauthn"))
+        );
+    },
+    recordWebAuthnUse: async (userId: string, credentialId: string, counter: number, usedAt: Date) => {
+      await this.db
+        .update(userCredentials)
+        .set({ counter, lastUsedAt: usedAt })
+        .where(and(eq(userCredentials.id, credentialId), eq(userCredentials.userId, userId)));
+    },
+    removeCredential: async (userId: string, credentialId: string) => {
+      if (!this.isUuid(userId) || !this.isUuid(credentialId)) return "not_found" as const;
+      return this.db.transaction(async (tx) => {
+        // lock the user row so concurrent removals cannot both pass the "not the last one" check
+        const owner = await tx.select({ id: users.id }).from(users).where(eq(users.id, userId)).for("update");
+        if (owner.length === 0) return "not_found" as const;
+        const [{ total }] = await tx
+          .select({ total: count() })
+          .from(userCredentials)
+          .where(eq(userCredentials.userId, userId));
+        const target = await tx
+          .select({ id: userCredentials.id })
+          .from(userCredentials)
+          .where(and(eq(userCredentials.id, credentialId), eq(userCredentials.userId, userId)));
+        if (target.length === 0) return "not_found" as const;
+        if (total <= 1) return "last_credential" as const;
+        await tx.delete(userCredentials).where(eq(userCredentials.id, credentialId));
+        return "removed" as const;
+      });
     }
   };
 
-  readonly credentials = {
-    create: (cred: WebAuthnCredential) => insert("Passkey", () => this.db.insert(webauthnCredentials).values(cred)),
-    findByCredId: async (credId: string) =>
-      clean<WebAuthnCredential>(
-        (await this.db.select().from(webauthnCredentials).where(eq(webauthnCredentials.credId, credId)))[0]
-      ),
-    listByUser: async (userId: string) =>
-      (
-        await this.db
-          .select()
-          .from(webauthnCredentials)
-          .where(eq(webauthnCredentials.userId, userId))
-          .orderBy(asc(webauthnCredentials.createdAt))
-      ).map((r) => clean<WebAuthnCredential>(r)!),
-    recordUse: async (id: string, counter: number, usedAt: Date) => {
-      await this.db.update(webauthnCredentials).set({ counter, lastUsedAt: usedAt }).where(eq(webauthnCredentials.id, id));
-    },
-    delete: async (userId: string, id: string) => {
-      if (!UUID_RE.test(id)) return false; // uuid column would reject other formats
-      const rows = await this.db
-        .delete(webauthnCredentials)
-        .where(and(eq(webauthnCredentials.id, id), eq(webauthnCredentials.userId, userId)))
-        .returning({ id: webauthnCredentials.id });
-      return rows.length > 0;
-    }
-  };
+  private async loadUser(row: typeof users.$inferSelect | undefined): Promise<User | null> {
+    if (!row) return null;
+    const creds = await this.db
+      .select()
+      .from(userCredentials)
+      .where(eq(userCredentials.userId, row.id))
+      .orderBy(asc(userCredentials.createdAt));
+    return { id: row.id, username: row.username, createdAt: row.createdAt, credentials: creds.map(fromRow) };
+  }
 
   readonly challenges = {
-    create: (c: WebAuthnChallenge) => insert("Challenge", () => this.db.insert(webauthnChallenges).values(c)),
+    create: (c: WebAuthnChallenge) => this.insert("Challenge", () => this.db.insert(webauthnChallenges).values(c)),
     // DELETE ... RETURNING is atomic => single use
     consume: async (id: string, type: WebAuthnChallenge["type"]) =>
       clean<WebAuthnChallenge>(
@@ -111,7 +168,7 @@ export class DrizzleAuthRepository implements AuthRepository {
   };
 
   readonly authRequests = {
-    create: (r: AuthRequest) => insert("Authorization request", () => this.db.insert(authRequests).values(r)),
+    create: (r: AuthRequest) => this.insert("Authorization request", () => this.db.insert(authRequests).values(r)),
     findActive: async (id: string, now: Date) =>
       clean<AuthRequest>(
         (await this.db.select().from(authRequests).where(and(eq(authRequests.id, id), gt(authRequests.expiresAt, now))))[0]
@@ -128,7 +185,7 @@ export class DrizzleAuthRepository implements AuthRepository {
   };
 
   readonly authCodes = {
-    create: (c: AuthCode) => insert("Authorization code", () => this.db.insert(authCodes).values(c)),
+    create: (c: AuthCode) => this.insert("Authorization code", () => this.db.insert(authCodes).values(c)),
     // UPDATE ... WHERE used = false RETURNING => only one concurrent redeemer wins
     redeem: async (id: string) =>
       clean<AuthCode>(
@@ -145,7 +202,7 @@ export class DrizzleAuthRepository implements AuthRepository {
 
   readonly tokens = {
     createPair: (access: AccessToken, refresh: RefreshToken) =>
-      insert("Token", () =>
+      this.insert("Token", () =>
         this.db.transaction(async (tx) => {
           await tx.insert(accessTokens).values(access);
           await tx.insert(refreshTokens).values(refresh);
@@ -194,5 +251,23 @@ export class DrizzleAuthRepository implements AuthRepository {
 
   async close(): Promise<void> {
     await this.pool.end();
+  }
+
+  // ---------------------------------------------------------------- query helpers
+
+  /** uuid columns reject other formats, so callers check before querying. */
+  private isUuid(id: string): boolean {
+    return DrizzleAuthRepository.UUID_RE.test(id);
+  }
+
+  /** Runs an insert, mapping Postgres unique_violation (possibly wrapped by DrizzleQueryError) to DuplicateKeyError. */
+  private async insert(what: string, run: () => Promise<unknown>): Promise<void> {
+    try {
+      await run();
+    } catch (error) {
+      const e = error as { code?: string; cause?: { code?: string } };
+      if (e.code === "23505" || e.cause?.code === "23505") throw new DuplicateKeyError(`${what} already exists`);
+      throw error;
+    }
   }
 }

@@ -63,6 +63,19 @@ pnpm dev                        # API :3000 + UI (Vite) http://localhost:5173
 | `mongo` (default) | MongoDB native driver (`MONGO_URL`, `MONGO_DB`) | หมดอายุด้วย TTL index |
 | `postgres` | PostgreSQL ผ่าน Drizzle ORM (`DATABASE_URL`) | migration ใน `./drizzle` รันอัตโนมัติตอน start, ลบแถวหมดอายุทุก 10 นาที |
 
+**User model** — หนึ่ง user มีได้หลาย credential (`User.credentials[]`):
+
+```ts
+type Credential =
+  | { type: "password"; value: string; algorithm: "argon2id" | "bcrypt"; ... }
+  | { type: "webauthn"; webauthn: { credId, publicKeyPem, counter, transports, name }; ... }
+```
+
+- Mongo: ฝังเป็น array ใน document `users` (unique index บน `credentials.key`)
+- Postgres: ตาราง `user_credentials` หนึ่งแถวต่อ credential (CHECK constraint ตาม `type`, password ได้ 1 อันต่อ user)
+- password ที่ `algorithm` ไม่ใช่ argon2id (เช่น import มาจากระบบอื่น) จะถูก verify แล้ว upgrade เป็น argon2id ตอน login — เพิ่มตัว verify ได้ที่ [src/shared/hashing.ts](src/shared/hashing.ts)
+- ลบ credential สุดท้ายของ user ไม่ได้
+
 โค้ด auth ทั้งหมดคุยผ่าน `AuthRepository` ([src/auth/repository.ts](src/auth/repository.ts)) — เพิ่ม DB ใหม่ได้โดย implement interface นี้ใน `src/auth/repositories/` แล้วเพิ่มใน `createAuthRepository()`
 
 แก้ schema Postgres ที่ `src/auth/repositories/drizzle/schema.ts` แล้วรัน `pnpm db:generate` เพื่อสร้าง migration ใหม่ (`pnpm db:studio` เปิด Drizzle Studio)

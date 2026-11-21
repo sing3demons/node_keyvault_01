@@ -8,6 +8,20 @@
       "when": 1795245551428,
       "tag": "0000_init",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1795246766088,
+      "tag": "0001_user_credentials",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1795246775828,
+      "tag": "0002_drop_webauthn_credentials",
+      "breakpoints": true
     }
   ]
 }

@@ -1,44 +1,36 @@
-import type { Context } from 'hono'
-import { IKeyVaultService } from './service';
-
+import type { Context } from "hono";
+import { parse, parseJsonBody } from "../shared/http.js";
+import { secretNameParam, setSecretBody } from "./schemas.js";
+import type { IKeyVaultService } from "./service.js";
 
 export class KeyVaultController {
-    constructor(private readonly service: IKeyVaultService) {
-    }
+  constructor(private readonly service: IKeyVaultService) {}
 
-    // app.get("/secrets", async (c) => c.json({ secrets: await secretStore.listSecrets() }));
-    async getSecrets(ctx: Context) {
-        const secrets = await this.service.getSecrets();
-        return ctx.json({ secrets });
-    }
-    async getSecret(ctx: Context) {
-        const name = ctx.req.param("name");
-        if (!name) {
-            return ctx.json({ message: "Name parameter is required" }, 400);
-        }
-        const value = await this.service.getSecret(name);
-        return ctx.json({ name, value });
-    }
-    async setSecret(ctx: Context) {
-        const name = ctx.req.param("name");
-        if (!name) {
-            return ctx.json({ message: "Name parameter is required" }, 400);
-        }
-        const body = await ctx.req.json().catch(() => null);
-        const value = (body as { value?: unknown } | null)?.value;
-        if (typeof value !== "string" || value.length === 0) {
-            return ctx.json({ message: "Body must include a non-empty string field: value" }, 400);
-        }
-        await this.service.setSecret(name, value);
-        return ctx.body(null, 204);
-    }
+  /** GET /secrets */
+  async getSecrets(ctx: Context) {
+    const secrets = await this.service.getSecrets();
+    return ctx.json({ secrets });
+  }
 
-    async deleteSecret(ctx: Context) {
-        const name = ctx.req.param("name");
-        if (!name) {
-            return ctx.json({ message: "Name parameter is required" }, 400);
-        }
-        await this.service.deleteSecret(name);
-        return ctx.body(null, 204);
-    }
+  /** GET /secrets/:name */
+  async getSecret(ctx: Context) {
+    const { name } = parse(secretNameParam, ctx.req.param());
+    const value = await this.service.getSecret(name);
+    return ctx.json({ name, value });
+  }
+
+  /** PUT /secrets/:name  body: { value } */
+  async setSecret(ctx: Context) {
+    const { name } = parse(secretNameParam, ctx.req.param());
+    const { value } = await parseJsonBody(ctx, setSecretBody);
+    await this.service.setSecret(name, value);
+    return ctx.body(null, 204);
+  }
+
+  /** DELETE /secrets/:name */
+  async deleteSecret(ctx: Context) {
+    const { name } = parse(secretNameParam, ctx.req.param());
+    await this.service.deleteSecret(name);
+    return ctx.body(null, 204);
+  }
 }

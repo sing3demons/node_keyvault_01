@@ -1,16 +1,17 @@
 import { serve } from "@hono/node-server";
 import { serveStatic } from "@hono/node-server/serve-static";
 import { Hono } from "hono";
-import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { config } from "./config.js";
+import { errorHandler, notFoundHandler } from "./shared/http.js";
 import { KeyVaultService } from "./keyvault/service.js";
 import { KeyVaultController } from "./keyvault/controller.js";
 import { AzureKeyVaultSecretStore } from "./keyvault/store.js";
 import { createAuthRepository } from "./auth/repositories/index.js";
 import { AuthService } from "./auth/service.js";
+import { Argon2idHasher, SecretHasher } from "./shared/hashing.js";
 import { WebAuthnService } from "./auth/webauthn.js";
 import { AuthController } from "./auth/controller.js";
-import { requireAuth, type AuthEnv } from "./auth/middleware.js";
+import { requireAuth, type AuthEnv } from "./shared/middleware.js";
 
 async function main() {
   const azureVaultUrl: string = process.env.AZURE_KEYVAULT_URL as string;
@@ -28,29 +29,15 @@ async function main() {
   await authRepo.init();
   // RDBs have no TTL index: sweep expired codes/tokens/challenges periodically
   setInterval(() => authRepo.purgeExpired(new Date()).catch((e) => console.error("purgeExpired failed", e)), 10 * 60_000).unref();
-  const authService = new AuthService(authRepo, config.oauth);
+  const authService = new AuthService(authRepo, new SecretHasher(new Argon2idHasher()), config.oauth);
   const webAuthnService = new WebAuthnService(authRepo, config.webauthn);
   const auth = new AuthController(authService, webAuthnService);
   const bearer = requireAuth(authService);
 
   const app = new Hono<AuthEnv>();
 
-  app.onError((error, c) => {
-    let statusCode: ContentfulStatusCode = 500;
-    if (typeof error === "object" && error !== null && "statusCode" in error) {
-      const code = (error as { statusCode?: unknown }).statusCode;
-      if (typeof code === "number" && code >= 400 && code < 600) {
-        statusCode = code as ContentfulStatusCode;
-      }
-    }
-    if (statusCode === 500) console.error(error);
-    return c.json(
-      {
-        message: error instanceof Error ? error.message : "Unknown error"
-      },
-      statusCode
-    );
-  });
+  app.onError(errorHandler);
+  app.notFound(notFoundHandler);
 
   app.get("/health", (c) => c.json({ status: "ok" }));
 

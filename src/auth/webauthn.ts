@@ -1,8 +1,11 @@
 import { Fido2Lib } from "fido2-lib";
 import { randomUUID } from "node:crypto";
-import { fromBase64Url, randomToken, toBase64Url } from "./crypto.js";
-import { HttpError } from "./errors.js";
-import { DuplicateKeyError, type AuthRepository, type WebAuthnCredential } from "./repository.js";
+import { fromBase64Url, randomToken, toBase64Url } from "../shared/crypto.js";
+import { HttpError } from "../shared/http.js";
+import { errorMessage, expiresIn } from "../shared/util.js";
+import { isWebAuthn, type WebAuthnCredential } from "./model.js";
+import { DuplicateKeyError, type AuthRepository } from "./repository.js";
+import type { AssertionCredential, AttestationCredential } from "./schemas.js";
 
 export interface WebAuthnSettings {
   rpId: string;
@@ -10,27 +13,7 @@ export interface WebAuthnSettings {
   origins: string[];
 }
 
-/** JSON shape the browser sends back (all binary fields base64url). */
-export interface CredentialJSON {
-  id: string;
-  rawId: string;
-  type: "public-key";
-  transports?: string[];
-  response: {
-    clientDataJSON: string;
-    attestationObject?: string;
-    authenticatorData?: string;
-    signature?: string;
-    userHandle?: string | null;
-  };
-}
-
-// UUID (current) or 24-hex ObjectId (credentials created by the earlier Mongo-only version)
-const UUID_RE = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{24})$/i;
 const CHALLENGE_TTL_MS = 5 * 60_000;
-const later = (ms: number) => new Date(Date.now() + ms);
-/** WebAuthn user.id / userHandle = UTF-8 bytes of the user's id. */
-const userHandleOf = (userId: string) => Buffer.from(userId, "utf8").toString("base64url");
 
 export class WebAuthnService {
   private readonly fido: Fido2Lib;
@@ -54,7 +37,7 @@ export class WebAuthnService {
   // ---------------------------------------------------------------- registration (signed-in user)
 
   async registrationOptions(userId: string, username: string) {
-    const existing = await this.repo.credentials.listByUser(userId);
+    const existing = await this.passkeysOf(userId);
     const options = await this.fido.attestationOptions();
     const challenge = toBase64Url(options.challenge);
     const challengeId = randomToken(16);
@@ -63,30 +46,27 @@ export class WebAuthnService {
       type: "register",
       challenge,
       userId,
-      expiresAt: later(CHALLENGE_TTL_MS)
+      expiresAt: expiresIn(CHALLENGE_TTL_MS)
     });
     return {
       challengeId,
       publicKey: {
         rp: options.rp,
-        user: { id: userHandleOf(userId), name: username, displayName: username },
+        user: { id: this.userHandleOf(userId), name: username, displayName: username },
         challenge,
         pubKeyCredParams: options.pubKeyCredParams,
         timeout: options.timeout,
         attestation: options.attestation,
         authenticatorSelection: { ...options.authenticatorSelection, residentKey: "required" },
-        excludeCredentials: existing.map((c) => ({ type: "public-key", id: c.credId, transports: c.transports }))
+        excludeCredentials: existing.map(({ webauthn: w }) => ({ type: "public-key", id: w.credId, transports: w.transports }))
       }
     };
   }
 
-  async verifyRegistration(userId: string, challengeId: unknown, credential: CredentialJSON, name?: unknown) {
+  async verifyRegistration(userId: string, challengeId: string, credential: AttestationCredential, name?: string) {
     const stored = await this.consumeChallenge(challengeId, "register");
     if (stored.userId !== userId) {
       throw new HttpError(400, "Challenge does not belong to this user");
-    }
-    if (!credential?.rawId || !credential.response?.attestationObject || !credential.response.clientDataJSON) {
-      throw new HttpError(400, "Malformed credential");
     }
     let result;
     try {
@@ -102,25 +82,26 @@ export class WebAuthnService {
         { challenge: stored.challenge, origin: this.settings.origins, rpId: this.settings.rpId, factor: "either" }
       );
     } catch (error) {
-      throw new HttpError(400, `Passkey registration failed: ${(error as Error).message}`);
+      throw new HttpError(400, `Passkey registration failed: ${errorMessage(error)}`);
     }
+    const attested = this.attestedCredential(result.authnrData);
     const doc: WebAuthnCredential = {
       id: randomUUID(),
-      userId,
-      credId: toBase64Url(result.authnrData.get("credId") as ArrayBuffer),
-      publicKeyPem: result.authnrData.get("credentialPublicKeyPem") as string,
-      counter: Number(result.authnrData.get("counter") ?? 0),
-      transports: credential.transports,
-      name: typeof name === "string" && name.trim() ? name.trim().slice(0, 64) : "Passkey",
+      type: "webauthn",
+      webauthn: {
+        ...attested,
+        transports: credential.transports,
+        name: name || "Passkey"
+      },
       createdAt: new Date()
     };
     try {
-      await this.repo.credentials.create(doc);
+      await this.repo.users.addCredential(userId, doc);
     } catch (error) {
       if (error instanceof DuplicateKeyError) throw new HttpError(409, "Passkey already registered");
       throw error;
     }
-    return { id: doc.id, name: doc.name, createdAt: doc.createdAt.toISOString() };
+    return { id: doc.id, name: doc.webauthn.name, createdAt: doc.createdAt.toISOString() };
   }
 
   // ---------------------------------------------------------------- authentication (during /oauth/authorize)
@@ -134,7 +115,7 @@ export class WebAuthnService {
       type: "login",
       challenge,
       authRequestId,
-      expiresAt: later(CHALLENGE_TTL_MS)
+      expiresAt: expiresIn(CHALLENGE_TTL_MS)
     });
     return {
       challengeId,
@@ -149,19 +130,17 @@ export class WebAuthnService {
   }
 
   /** Verifies an assertion and returns the authenticated user's id. */
-  async verifyLogin(challengeId: unknown, authRequestId: string, credential: CredentialJSON): Promise<string> {
+  async verifyLogin(challengeId: string, authRequestId: string, credential: AssertionCredential): Promise<string> {
     const stored = await this.consumeChallenge(challengeId, "login");
     if (stored.authRequestId !== authRequestId) {
       throw new HttpError(400, "Challenge does not belong to this authorization request");
     }
-    const r = credential?.response;
-    if (!credential?.rawId || !r?.clientDataJSON || !r.authenticatorData || !r.signature) {
-      throw new HttpError(400, "Malformed credential");
+    const r = credential.response;
+    const found = await this.repo.users.findByWebAuthnCredId(credential.rawId);
+    if (!found) {
+      throw new HttpError(401, "Unknown passkey", "access_denied");
     }
-    const cred = await this.repo.credentials.findByCredId(credential.rawId);
-    if (!cred) {
-      throw new HttpError(401, "Unknown passkey");
-    }
+    const { user, credential: cred } = found;
     let result;
     try {
       result = await this.fido.assertionResult(
@@ -179,47 +158,79 @@ export class WebAuthnService {
           origin: this.settings.origins,
           rpId: this.settings.rpId,
           factor: "either",
-          publicKey: cred.publicKeyPem,
-          prevCounter: cred.counter,
-          userHandle: userHandleOf(cred.userId)
+          publicKey: cred.webauthn.publicKeyPem,
+          prevCounter: cred.webauthn.counter,
+          userHandle: this.userHandleOf(user.id)
         }
       );
     } catch (error) {
-      throw new HttpError(401, `Passkey verification failed: ${(error as Error).message}`);
+      throw new HttpError(401, `Passkey verification failed: ${errorMessage(error)}`, "access_denied");
     }
-    await this.repo.credentials.recordUse(
+    await this.repo.users.recordWebAuthnUse(
+      user.id,
       cred.id,
-      Number(result.authnrData.get("counter") ?? cred.counter),
+      this.signCounter(result.authnrData, cred.webauthn.counter),
       new Date()
     );
-    return cred.userId;
+    return user.id;
   }
 
   // ---------------------------------------------------------------- management
 
   async list(userId: string) {
-    const creds = await this.repo.credentials.listByUser(userId);
+    const creds = await this.passkeysOf(userId);
     return creds.map((c) => ({
       id: c.id,
-      name: c.name,
+      name: c.webauthn.name,
       createdAt: c.createdAt.toISOString(),
       lastUsedAt: c.lastUsedAt?.toISOString()
     }));
   }
 
   async remove(userId: string, id: string): Promise<void> {
-    if (!UUID_RE.test(id) || !(await this.repo.credentials.delete(userId, id))) throw new HttpError(404, "Passkey not found");
+    // only passkeys can be removed through this endpoint
+    if (!(await this.passkeysOf(userId)).some((c) => c.id === id)) {
+      throw new HttpError(404, "Passkey not found");
+    }
+    const result = await this.repo.users.removeCredential(userId, id);
+    if (result === "not_found") throw new HttpError(404, "Passkey not found");
+    if (result === "last_credential") throw new HttpError(409, "Cannot remove your only way to sign in");
   }
 
-  private async consumeChallenge(challengeId: unknown, type: "register" | "login") {
-    if (typeof challengeId !== "string" || !challengeId) {
-      throw new HttpError(400, "challengeId is required");
-    }
+  private async passkeysOf(userId: string): Promise<WebAuthnCredential[]> {
+    const user = await this.repo.users.findById(userId);
+    return user?.credentials.filter(isWebAuthn) ?? [];
+  }
+
+  private async consumeChallenge(challengeId: string, type: "register" | "login") {
     // single use
     const stored = await this.repo.challenges.consume(challengeId, type);
     if (!stored || stored.expiresAt <= new Date()) {
       throw new HttpError(400, "Challenge expired or not found");
     }
     return stored;
+  }
+
+  // ---------------------------------------------------------------- fido2-lib adapters
+
+  /** WebAuthn user.id / userHandle = UTF-8 bytes of the user's id. */
+  private userHandleOf(userId: string): string {
+    return Buffer.from(userId, "utf8").toString("base64url");
+  }
+
+  /** fido2-lib types authnrData as Map<string, any>; read the fields we need with runtime checks. */
+  private attestedCredential(authnrData: Map<string, unknown>) {
+    const credId = authnrData.get("credId");
+    const publicKeyPem = authnrData.get("credentialPublicKeyPem");
+    const counter = authnrData.get("counter");
+    if (!(credId instanceof ArrayBuffer) || typeof publicKeyPem !== "string" || typeof counter !== "number") {
+      throw new HttpError(400, "Passkey registration failed: authenticator data is incomplete");
+    }
+    return { credId: toBase64Url(credId), publicKeyPem, counter };
+  }
+
+  private signCounter(authnrData: Map<string, unknown>, fallback: number): number {
+    const counter = authnrData.get("counter");
+    return typeof counter === "number" ? counter : fallback;
   }
 }

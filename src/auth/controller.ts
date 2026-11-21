@@ -1,12 +1,19 @@
 import type { Context } from "hono";
-import { OAuthError } from "./errors.js";
-import type { AuthEnv } from "./middleware.js";
+import {
+  authorizeQuery,
+  credentialIdParam,
+  passkeyLoginOptionsBody,
+  passkeyLoginVerifyBody,
+  passkeyRegisterVerifyBody,
+  passwordLoginBody,
+  registerBody,
+  parseTokenRequest,
+  revokeBody
+} from "./schemas.js";
+import { parse, parseJsonBody } from "../shared/http.js";
+import type { AuthEnv } from "../shared/middleware.js";
 import type { AuthService } from "./service.js";
-import type { CredentialJSON, WebAuthnService } from "./webauthn.js";
-
-type Body = Record<string, unknown>;
-const readJson = async (c: Context): Promise<Body> => ((await c.req.json().catch(() => null)) as Body | null) ?? {};
-const str = (v: unknown): string | undefined => (typeof v === "string" && v.length > 0 ? v : undefined);
+import type { WebAuthnService } from "./webauthn.js";
 
 export class AuthController {
   constructor(
@@ -18,7 +25,7 @@ export class AuthController {
 
   /** GET /oauth/authorize — validate and hand off to the SPA login page. */
   async authorize(c: Context) {
-    const q = c.req.query();
+    const q = parse(authorizeQuery, c.req.query());
     const result = await this.auth.createAuthRequest({
       responseType: q.response_type,
       clientId: q.client_id,
@@ -36,40 +43,25 @@ export class AuthController {
   async token(c: Context) {
     c.header("Cache-Control", "no-store");
     c.header("Pragma", "no-cache");
-    try {
-      const body = await c.req.parseBody();
-      const p = (k: string) => str(body[k]);
-      switch (p("grant_type")) {
-        case "authorization_code":
-          return c.json(
-            await this.auth.exchangeCode({
-              code: p("code"),
-              redirectUri: p("redirect_uri"),
-              clientId: p("client_id"),
-              codeVerifier: p("code_verifier")
-            })
-          );
-        case "refresh_token":
-          return c.json(
-            await this.auth.refresh({ refreshToken: p("refresh_token"), clientId: p("client_id"), scope: p("scope") })
-          );
-        case undefined:
-          throw new OAuthError("invalid_request", "grant_type is required");
-        default:
-          throw new OAuthError("unsupported_grant_type", "Supported: authorization_code, refresh_token");
-      }
-    } catch (error) {
-      if (error instanceof OAuthError) {
-        return c.json({ error: error.error, error_description: error.message }, error.statusCode as 400 | 401);
-      }
-      throw error;
-    }
+    // OAuthError is an HttpError, so app.onError renders the RFC 6749 §5.2 body (headers above are kept)
+    const req = parseTokenRequest(await c.req.parseBody());
+    const tokens =
+      req.grant_type === "authorization_code"
+        ? await this.auth.exchangeCode({
+            code: req.code,
+            redirectUri: req.redirect_uri,
+            clientId: req.client_id,
+            codeVerifier: req.code_verifier
+          })
+        : await this.auth.refresh({ refreshToken: req.refresh_token, clientId: req.client_id, scope: req.scope });
+    return c.json(tokens);
   }
 
-  /** POST /oauth/revoke — RFC 7009, always 200. */
+  /** POST /oauth/revoke — RFC 7009: always 200, even for unknown or malformed tokens. */
   async revoke(c: Context) {
-    const body = await c.req.parseBody().catch(() => ({}) as Record<string, unknown>);
-    await this.auth.revoke(str(body.token));
+    const form = await c.req.parseBody().catch(() => ({}));
+    const body = revokeBody.safeParse(form);
+    if (body.success) await this.auth.revoke(body.data.token);
     return c.body(null, 200);
   }
 
@@ -82,32 +74,28 @@ export class AuthController {
   // ================================================================ /auth (used by the login page)
 
   async register(c: Context) {
-    const body = await readJson(c);
-    const user = await this.auth.register(body.username, body.password);
-    return c.json(user, 201);
+    const body = await parseJsonBody(c, registerBody);
+    return c.json(await this.auth.register(body), 201);
   }
 
   async loginPassword(c: Context) {
-    const body = await readJson(c);
-    const requestId = str(body.request_id);
-    await this.auth.assertAuthRequest(requestId);
+    const body = await parseJsonBody(c, passwordLoginBody);
+    await this.auth.assertAuthRequest(body.request_id);
     const user = await this.auth.verifyPassword(body.username, body.password);
-    return c.json(await this.auth.completeAuthRequest(requestId!, user.id));
+    return c.json(await this.auth.completeAuthRequest(body.request_id, user.id));
   }
 
   async passkeyLoginOptions(c: Context) {
-    const body = await readJson(c);
-    const requestId = str(body.request_id);
-    await this.auth.assertAuthRequest(requestId);
-    return c.json(await this.webauthn.loginOptions(requestId!));
+    const body = await parseJsonBody(c, passkeyLoginOptionsBody);
+    await this.auth.assertAuthRequest(body.request_id);
+    return c.json(await this.webauthn.loginOptions(body.request_id));
   }
 
   async passkeyLoginVerify(c: Context) {
-    const body = await readJson(c);
-    const requestId = str(body.request_id);
-    await this.auth.assertAuthRequest(requestId);
-    const userId = await this.webauthn.verifyLogin(body.challengeId, requestId!, body.credential as CredentialJSON);
-    return c.json(await this.auth.completeAuthRequest(requestId!, userId));
+    const body = await parseJsonBody(c, passkeyLoginVerifyBody);
+    await this.auth.assertAuthRequest(body.request_id);
+    const userId = await this.webauthn.verifyLogin(body.challengeId, body.request_id, body.credential);
+    return c.json(await this.auth.completeAuthRequest(body.request_id, userId));
   }
 
   // ================================================================ passkey management (Bearer)
@@ -119,13 +107,8 @@ export class AuthController {
 
   async passkeyRegisterVerify(c: Context<AuthEnv>) {
     const user = c.get("user");
-    const body = await readJson(c);
-    const created = await this.webauthn.verifyRegistration(
-      user.id,
-      body.challengeId,
-      body.credential as CredentialJSON,
-      body.name
-    );
+    const body = await parseJsonBody(c, passkeyRegisterVerifyBody);
+    const created = await this.webauthn.verifyRegistration(user.id, body.challengeId, body.credential, body.name);
     return c.json(created, 201);
   }
 
@@ -134,7 +117,8 @@ export class AuthController {
   }
 
   async deletePasskey(c: Context<AuthEnv>) {
-    await this.webauthn.remove(c.get("user").id, c.req.param("id") ?? "");
+    const { id } = parse(credentialIdParam, c.req.param());
+    await this.webauthn.remove(c.get("user").id, id);
     return c.body(null, 204);
   }
 }

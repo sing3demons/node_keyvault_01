@@ -1,8 +1,13 @@
-import argon2 from "argon2";
 import { randomUUID } from "node:crypto";
-import { randomToken, sha256, verifyPkceS256 } from "./crypto.js";
-import { HttpError, OAuthError } from "./errors.js";
-import { DuplicateKeyError, type AuthRepository, type User } from "./repository.js";
+import { randomToken, sha256 } from "../shared/crypto.js";
+import { HttpError } from "../shared/http.js";
+import type { SecretHasher } from "../shared/hashing.js";
+import type { AuthenticatedUser, TokenAuthenticator } from "../shared/middleware.js";
+import { expiresIn } from "../shared/util.js";
+import { OAuthError, verifyPkceS256 } from "./oauth.js";
+import { isPassword, type User } from "./model.js";
+import { DuplicateKeyError, type AuthRepository } from "./repository.js";
+import type { RegisterBody } from "./schemas.js";
 
 export interface OAuthSettings {
   clientId: string;
@@ -29,43 +34,29 @@ export interface TokenResponse {
   scope: string;
 }
 
-export interface AuthenticatedUser {
-  id: string;
-  username: string;
-  scope: string;
-  clientId: string;
-}
-
 const SUPPORTED_SCOPES = new Set(["secrets"]);
 const DEFAULT_SCOPE = "secrets";
 const AUTH_REQUEST_TTL_MS = 10 * 60_000;
 const AUTH_CODE_TTL_MS = 60_000;
 
-const USERNAME_RE = /^[a-z0-9_.-]{3,32}$/;
-const ARGON2_OPTIONS = { type: argon2.argon2id, memoryCost: 19_456, timeCost: 2, parallelism: 1 } as const;
-
-const later = (ms: number) => new Date(Date.now() + ms);
-
-export class AuthService {
-  private dummyHash?: Promise<string>;
-
+export class AuthService implements TokenAuthenticator {
   constructor(
     private readonly repo: AuthRepository,
+    private readonly hasher: SecretHasher,
     private readonly oauth: OAuthSettings
   ) {}
 
   // ---------------------------------------------------------------- users
 
-  async register(rawUsername: unknown, password: unknown): Promise<{ id: string; username: string }> {
-    const username = typeof rawUsername === "string" ? rawUsername.trim().toLowerCase() : "";
-    if (!USERNAME_RE.test(username)) {
-      throw new HttpError(400, "Username must be 3-32 chars: a-z, 0-9, _ . -");
-    }
-    if (typeof password !== "string" || password.length < 8 || password.length > 256) {
-      throw new HttpError(400, "Password must be 8-256 characters");
-    }
-    const passwordHash = await argon2.hash(password, ARGON2_OPTIONS);
-    const user: User = { id: randomUUID(), username, passwordHash, createdAt: new Date() };
+  /** Input is already validated and normalized by `registerBody`. */
+  async register({ username, password }: RegisterBody): Promise<{ id: string; username: string }> {
+    const now = new Date();
+    const user: User = {
+      id: randomUUID(),
+      username,
+      credentials: [{ id: randomUUID(), type: "password", ...(await this.hasher.hash(password)), createdAt: now }],
+      createdAt: now
+    };
     try {
       await this.repo.users.create(user);
     } catch (error) {
@@ -77,26 +68,19 @@ export class AuthService {
     return { id: user.id, username };
   }
 
-  async verifyPassword(rawUsername: unknown, password: unknown): Promise<User> {
-    const username = typeof rawUsername === "string" ? rawUsername.trim().toLowerCase() : "";
-    const pw = typeof password === "string" ? password : "";
-    const user = username ? await this.repo.users.findByUsername(username) : null;
-    // Always run argon2 so response time does not reveal whether the user exists
-    const hash = user?.passwordHash ?? (await this.getDummyHash());
-    const ok = await argon2.verify(hash, pw).catch(() => false);
-    if (!user || !ok) {
-      throw new HttpError(401, "Invalid username or password");
+  async verifyPassword(username: string, password: string): Promise<User> {
+    const user = await this.repo.users.findByUsername(username);
+    const credential = user?.credentials.find(isPassword);
+    // runs even without a credential, so timing does not reveal whether the user exists
+    const result = await this.hasher.verify(credential, password);
+    if (!user || !credential || !result.ok) {
+      throw new HttpError(401, "Invalid username or password", "access_denied");
     }
-    if (argon2.needsRehash(user.passwordHash, ARGON2_OPTIONS)) {
-      const passwordHash = await argon2.hash(pw, ARGON2_OPTIONS);
-      await this.repo.users.updatePasswordHash(user.id, passwordHash);
+    if (result.needsRehash) {
+      const { value, algorithm } = await this.hasher.hash(password);
+      await this.repo.users.updateSecret(user.id, credential.id, value, algorithm);
     }
     return user;
-  }
-
-  private getDummyHash(): Promise<string> {
-    this.dummyHash ??= argon2.hash(randomToken(), ARGON2_OPTIONS);
-    return this.dummyHash;
   }
 
   // ---------------------------------------------------------------- /oauth/authorize
@@ -107,7 +91,7 @@ export class AuthService {
    */
   async createAuthRequest(p: AuthorizeParams): Promise<{ requestId: string } | { redirect: string }> {
     if (p.clientId !== this.oauth.clientId) {
-      throw new HttpError(400, "Unknown client_id");
+      throw new HttpError(400, "Unknown client_id", "invalid_client");
     }
     if (!p.redirectUri || !this.oauth.redirectUris.includes(p.redirectUri)) {
       throw new HttpError(400, "Invalid redirect_uri");
@@ -133,16 +117,13 @@ export class AuthService {
       state: p.state,
       scope,
       codeChallenge: p.codeChallenge,
-      expiresAt: later(AUTH_REQUEST_TTL_MS)
+      expiresAt: expiresIn(AUTH_REQUEST_TTL_MS)
     });
     return { requestId };
   }
 
   /** Throws if the pending authorization request does not exist / expired (does not consume it). */
-  async assertAuthRequest(requestId: unknown): Promise<void> {
-    if (typeof requestId !== "string" || !requestId) {
-      throw new HttpError(400, "request_id is required");
-    }
+  async assertAuthRequest(requestId: string): Promise<void> {
     const req = await this.repo.authRequests.findActive(requestId, new Date());
     if (!req) {
       throw new HttpError(400, "Authorization request expired or not found — please start sign-in again");
@@ -165,7 +146,7 @@ export class AuthService {
       codeChallenge: req.codeChallenge,
       familyId: randomToken(16),
       used: false,
-      expiresAt: later(AUTH_CODE_TTL_MS)
+      expiresAt: expiresIn(AUTH_CODE_TTL_MS)
     });
     return { redirect: this.buildRedirect(req.redirectUri, { code, state: req.state }) };
   }
@@ -173,14 +154,11 @@ export class AuthService {
   // ---------------------------------------------------------------- /oauth/token
 
   async exchangeCode(p: {
-    code?: string;
-    redirectUri?: string;
-    clientId?: string;
-    codeVerifier?: string;
+    code: string;
+    redirectUri: string;
+    clientId: string;
+    codeVerifier: string;
   }): Promise<TokenResponse> {
-    if (!p.code || !p.redirectUri || !p.clientId || !p.codeVerifier) {
-      throw new OAuthError("invalid_request", "code, redirect_uri, client_id and code_verifier are required");
-    }
     if (p.clientId !== this.oauth.clientId) {
       throw new OAuthError("invalid_client", "Unknown client", 401);
     }
@@ -206,10 +184,7 @@ export class AuthService {
     return this.issueTokens(codeDoc.userId, codeDoc.clientId, codeDoc.scope, codeDoc.familyId);
   }
 
-  async refresh(p: { refreshToken?: string; clientId?: string; scope?: string }): Promise<TokenResponse> {
-    if (!p.refreshToken || !p.clientId) {
-      throw new OAuthError("invalid_request", "refresh_token and client_id are required");
-    }
+  async refresh(p: { refreshToken: string; clientId: string; scope?: string }): Promise<TokenResponse> {
     if (p.clientId !== this.oauth.clientId) {
       throw new OAuthError("invalid_client", "Unknown client", 401);
     }
@@ -266,7 +241,7 @@ export class AuthService {
     const refreshToken = randomToken();
     const { accessTokenTtlSec, refreshTokenTtlSec } = this.oauth;
     await this.repo.tokens.createPair(
-      { id: sha256(accessToken), userId, clientId, scope, familyId, expiresAt: later(accessTokenTtlSec * 1000) },
+      { id: sha256(accessToken), userId, clientId, scope, familyId, expiresAt: expiresIn(accessTokenTtlSec * 1000) },
       {
         id: sha256(refreshToken),
         userId,
@@ -274,7 +249,7 @@ export class AuthService {
         scope,
         familyId,
         revoked: false,
-        expiresAt: later(refreshTokenTtlSec * 1000)
+        expiresAt: expiresIn(refreshTokenTtlSec * 1000)
       }
     );
     return {
