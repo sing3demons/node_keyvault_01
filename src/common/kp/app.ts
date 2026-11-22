@@ -19,6 +19,8 @@ interface Route {
   path: string;
   compiled: CompiledPath;
   handler: Handler<any, any, any>;
+  /** Event name (`cmd`) of the route this handler belongs to. */
+  event?: string;
 }
 
 /** Route registration, with validator() output typed through to the handler (up to 3 middleware). */
@@ -88,10 +90,14 @@ export class Kp<E extends Env = Env> {
 
   /** Register handlers for one method (or several, or "ALL"). */
   on(method: string | string[], path: string, ...handlers: Handler<E, any, any>[]): this {
+    return this.#add(method, path, handlers);
+  }
+
+  #add(method: string | string[], path: string, handlers: Handler<any, any, any>[], event?: string): this {
     const full = joinPaths(this.base, path === "*" ? "/*" : path);
     for (const m of Array.isArray(method) ? method : [method]) {
       for (const handler of handlers) {
-        this.#routes.push({ method: m.toUpperCase(), path: full, compiled: compilePath(full), handler });
+        this.#routes.push({ method: m.toUpperCase(), path: full, compiled: compilePath(full), handler, ...(event !== undefined ? { event } : {}) });
       }
     }
     return this;
@@ -107,7 +113,7 @@ export class Kp<E extends Env = Env> {
 
   /** Mount another app's routes under `path`. */
   route(path: string, app: Kp<any>): this {
-    for (const r of app.#routes) this.on(r.method, joinPaths(path, r.path), r.handler);
+    for (const r of app.#routes) this.#add(r.method, joinPaths(path, r.path), [r.handler], r.event);
     return this;
   }
 
@@ -121,7 +127,7 @@ export class Kp<E extends Env = Env> {
       for (const r of controllerRoutes(controller)) {
         const path = joinPaths(options.prefix ?? "", r.path);
         const chain = [...(options.use ?? []), ...r.middleware].map((m) => this.#resolve(m));
-        this.on(r.method, path, ...chain, r.handler);
+        this.#add(r.method, path, [...chain, r.handler], r.event);
       }
     }
     return this;
@@ -173,6 +179,8 @@ export class Kp<E extends Env = Env> {
     const c = new Context<E>(request, env, this.#notFound);
     const isHead = request.method === "HEAD";
     const matches = this.#match(isHead ? "GET" : request.method, c.req.path);
+    // known before the first middleware runs, so app-wide middleware (logging) can read c.Event() too
+    c.setEvent(matches.find((m) => m.event !== undefined)?.event);
     await this.#run(c, matches);
     const res = c.res;
     return isHead ? new Response(null, res) : res;
@@ -184,12 +192,12 @@ export class Kp<E extends Env = Env> {
     return this.fetch(req, env);
   }
 
-  #match(method: string, path: string): { handler: Handler<any, any, any>; params: Record<string, string> }[] {
+  #match(method: string, path: string): { handler: Handler<any, any, any>; params: Record<string, string>; event?: string }[] {
     const out = [];
     for (const r of this.#routes) {
       if (r.method !== ALL && r.method !== method) continue;
       const params = matchPath(r.compiled, path);
-      if (params) out.push({ handler: r.handler, params });
+      if (params) out.push({ handler: r.handler, params, ...(r.event !== undefined ? { event: r.event } : {}) });
     }
     return out;
   }

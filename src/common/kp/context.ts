@@ -25,11 +25,22 @@ export class Context<E extends Env = Env, P extends string = string, I extends I
   #res: Response | undefined;
   #vars = new Map<PropertyKey, unknown>();
   #notFound: NotFoundHandler<any>;
+  #event: string | undefined;
 
   constructor(request: Request, env: unknown, notFound: NotFoundHandler<any>) {
     this.req = new KpRequest<P, I>(request);
     this.env = (env ?? {}) as Bindings<E>;
     this.#notFound = notFound;
+  }
+
+  /** The `cmd` of the matched route: `@Get("/authorize", "authorize")` -> `"authorize"` (undefined when none). */
+  Event(): string | undefined {
+    return this.#event;
+  }
+
+  /** @internal set by the app once the route is matched */
+  setEvent(event: string | undefined): void {
+    this.#event = event;
   }
 
   // -------------------------------------------------------------- variables

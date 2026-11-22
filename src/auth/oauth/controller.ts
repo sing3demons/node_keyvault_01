@@ -31,7 +31,7 @@ export class OAuthController {
   constructor(private readonly oauth: OAuthService) {}
 
   /** Validate and hand off to the SPA login page. */
-  @Get("/authorize")
+  @Get("/authorize", "authorize")
   async authorize(c: Ctx) {
     const q = c.safeQuery(authorizeQuery);
     const result = await this.oauth.createAuthRequest({

@@ -42,6 +42,7 @@ type Method = (c: any, ...rest: any[]) => unknown;
 interface RouteMeta {
   method: string;
   path: string;
+  event: string | undefined;
 }
 
 const controllers = new WeakMap<Function, { prefix: string }>();
@@ -56,12 +57,13 @@ export function Controller(prefix = "/") {
   };
 }
 
+/** `@Get(path, cmd?)`: `cmd` names the route's event, read with `c.Event()` (handler and interceptors). */
 function routeDecorator(method: string) {
-  return (path = "/") =>
+  return (path = "/", cmd?: string) =>
     <T extends Method>(target: T, context: ClassMethodDecoratorContext<unknown, T>): void => {
       if (context.static || context.private) throw new TypeError(`@${method} needs a public instance method`);
       const list = methodRoutes.get(target) ?? [];
-      list.push({ method, path });
+      list.push({ method, path, event: cmd });
       methodRoutes.set(target, list);
     };
 }
@@ -94,6 +96,8 @@ export interface ControllerRoute {
   path: string;
   middleware: InterceptorLike[];
   handler: Handler<any, any, any>;
+  /** The `cmd` given to the route decorator. */
+  event: string | undefined;
 }
 
 /** Finds the controller metadata of an instance's class (or a base class). */
@@ -129,7 +133,8 @@ export function controllerRoutes(instance: object): ControllerRoute[] {
           method: meta.method,
           path: joinPaths(prefix, meta.path),
           middleware: [...shared, ...(methodMiddleware.get(fn) ?? [])],
-          handler
+          handler,
+          event: meta.event
         });
       }
     }

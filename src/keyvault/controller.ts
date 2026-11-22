@@ -20,7 +20,7 @@ export class KeyVaultController {
 
   /** GET /secrets/:name — value (needs read) */
   @Get("/:name")
-  async getSecret(c: Ctx<"/:name">) {
+  async getSecret(c: Ctx) {
     const { name } = c.safeParam(secretNameParam);
     const value = await this.service.getSecret(this.actor(c), name);
     return c.json({ name, value });
@@ -28,7 +28,7 @@ export class KeyVaultController {
 
   /** PUT /secrets/:name  body: { value } — create (caller owns it, 201) or update (needs write, 204) */
   @Put("/:name")
-  async setSecret(c: Ctx<"/:name">) {
+  async setSecret(c: Ctx) {
     const { name } = c.safeParam(secretNameParam);
     const { value } = await c.safeBody(setSecretBody);
     const { created } = await this.service.setSecret(this.actor(c), name, value);
@@ -37,7 +37,7 @@ export class KeyVaultController {
 
   /** DELETE /secrets/:name (needs delete) */
   @Delete("/:name")
-  async deleteSecret(c: Ctx<"/:name">) {
+  async deleteSecret(c: Ctx) {
     const { name } = c.safeParam(secretNameParam);
     await this.service.deleteSecret(this.actor(c), name);
     return c.body(null, 204);
@@ -47,14 +47,14 @@ export class KeyVaultController {
 
   /** GET /secrets/:name/grants (owner) */
   @Get("/:name/grants")
-  async getGrants(c: Ctx<"/:name/grants">) {
+  async getGrants(c: Ctx) {
     const { name } = c.safeParam(secretNameParam);
     return c.json({ grants: await this.service.getGrants(this.actor(c), name) });
   }
 
   /** PUT /secrets/:name/grants/:username  body: { permissions } (owner); [] revokes */
   @Put("/:name/grants/:username")
-  async setGrant(c: Ctx<"/:name/grants/:username">) {
+  async setGrant(c: Ctx) {
     const { name, username } = c.safeParam(grantParams);
     const { permissions } = await c.safeBody(setGrantBody);
     return c.json({ grants: await this.service.setGrant(this.actor(c), name, username, permissions) });
@@ -62,7 +62,7 @@ export class KeyVaultController {
 
   /** DELETE /secrets/:name/grants/:username (owner) */
   @Delete("/:name/grants/:username")
-  async deleteGrant(c: Ctx<"/:name/grants/:username">) {
+  async deleteGrant(c: Ctx) {
     const { name, username } = c.safeParam(grantParams);
     return c.json({ grants: await this.service.setGrant(this.actor(c), name, username, []) });
   }
@@ -71,7 +71,7 @@ export class KeyVaultController {
 
   /** PUT /secrets/:name/owner  body: { username } — owner gives it away, or an admin reassigns it */
   @Put("/:name/owner")
-  async transferOwnership(c: Ctx<"/:name/owner">) {
+  async transferOwnership(c: Ctx) {
     const { name } = c.safeParam(secretNameParam);
     const { username } = await c.safeBody(transferBody);
     return c.json(await this.service.transferOwnership(this.actor(c), name, username));
