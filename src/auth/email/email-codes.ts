@@ -7,6 +7,8 @@
 //   - sign-in links sign the user in where the link is opened: the client starts a fresh authorization
 //     request there (OIDC initiate_login_uri) and the link is redeemed on it (inspectLink() then openLink());
 //   - verify-only links mark the address verified; the account page that asked notices by polling (poll()).
+// Password-reset challenges ("reset") are only redeemed through redeem() (auth/password-reset/): the
+// generic code / link / resend endpoints refuse them.
 
 import { randomInt, timingSafeEqual } from "node:crypto";
 import { randomToken, sha256 } from "../../shared/crypto.js";
@@ -34,6 +36,16 @@ export interface MailContext {
 }
 
 /** What the client gets back while a code is pending (never the code itself). */
+export interface NewChallenge {
+  purpose: EmailChallengePurpose;
+  reason: EmailChallengeReason;
+  method: EmailVerificationMethod;
+  userId?: string;
+  email: string;
+  authRequestId?: string;
+  clientId?: string;
+}
+
 export interface PendingVerification {
   challengeId: string;
   /** Masked, e.g. "s•••s@example.com". */
@@ -47,6 +59,9 @@ export interface PendingVerification {
 }
 
 const CODE_DIGITS = 6;
+
+/** Challenges the generic /auth/email/* endpoints may touch (reset and master have their own). */
+const GENERIC_PURPOSES: readonly EmailChallengePurpose[] = ["signin", "verify", "master"];
 
 /** "someone@example.com" -> "s•••e@example.com" */
 export function maskEmail(email: string): string {
@@ -67,18 +82,7 @@ export class EmailCodeService {
   ) {}
 
   /** Creates a challenge and emails its code / link. */
-  async start(
-    p: {
-      purpose: EmailChallengePurpose;
-      reason: EmailChallengeReason;
-      method: EmailVerificationMethod;
-      userId?: string;
-      email: string;
-      authRequestId?: string;
-      clientId?: string;
-    },
-    mail: MailContext
-  ): Promise<PendingVerification> {
+  async start(p: NewChallenge, mail: MailContext): Promise<PendingVerification> {
     const id = randomToken(24);
     const method = p.method;
     const code = this.newSecret(method);
@@ -103,11 +107,44 @@ export class EmailCodeService {
     return this.pending(challenge);
   }
 
+  /**
+   * One pending challenge per user and purpose: asking again re-sends that one (a fresh code, the old one stops
+   * working) once the resend cooldown has passed and while sends are left; otherwise nothing is sent and the
+   * pending one is returned as it is. Keeps an unauthenticated endpoint from flooding someone's inbox.
+   */
+  async startOrResend(p: NewChallenge & { userId: string }, mail: MailContext): Promise<PendingVerification> {
+    const now = new Date();
+    const existing = await this.repo.emailChallenges.findLatestActive(p.userId, p.purpose, now);
+    if (!existing) return this.start(p, mail);
+    if (this.resendAt(existing) > now || existing.sends >= this.settings.maxSends) return this.pending(existing);
+    return this.resend(existing.id, mail, [p.purpose]);
+  }
+
+  /**
+   * What `start` would return, for a challenge that does not exist (no email is sent). Lets an endpoint answer
+   * the same way whether or not the account exists.
+   */
+  decoy(p: Pick<NewChallenge, "reason" | "method" | "email">): PendingVerification {
+    const now = Date.now();
+    return {
+      challengeId: randomToken(24),
+      email: maskEmail(p.email),
+      reason: p.reason,
+      method: p.method,
+      expiresAt: new Date(now + this.settings.ttlSec * 1000).toISOString(),
+      resendAt: new Date(now + this.settings.resendCooldownSec * 1000).toISOString()
+    };
+  }
+
   /** Emails a fresh code for the same challenge (the old code stops working). */
-  async resend(challengeId: string, mail: MailContext): Promise<PendingVerification> {
+  async resend(
+    challengeId: string,
+    mail: MailContext,
+    purposes: readonly EmailChallengePurpose[] = GENERIC_PURPOSES
+  ): Promise<PendingVerification> {
     const now = new Date();
     const stored = await this.repo.emailChallenges.findActive(challengeId, now);
-    if (!stored) throw this.gone();
+    if (!stored || !purposes.includes(stored.purpose)) throw this.gone();
     const wait = Math.ceil((this.resendAt(stored).getTime() - now.getTime()) / 1000);
     if (wait > 0) throw new HttpError(429, `Please wait ${wait}s before requesting another code`, "slow_down");
     if (stored.sends >= this.settings.maxSends) {
@@ -183,9 +220,30 @@ export class EmailCodeService {
     return stored;
   }
 
+  /**
+   * Checks the code or link token of a challenge of `purpose` and consumes it (single use). For flows whose
+   * page collects more than the secret, e.g. the new password of a reset.
+   */
+  async redeem(challengeId: string, secret: string, purpose: EmailChallengePurpose): Promise<EmailChallenge> {
+    const stored = await this.repo.emailChallenges.findActive(challengeId, new Date());
+    if (!stored || stored.purpose !== purpose) throw this.gone();
+    await this.verifySecret(stored, secret);
+    if (!(await this.repo.emailChallenges.consume(stored.id))) throw this.gone();
+    return stored;
+  }
+
+  /** A plain notice (no code), e.g. "your password was changed". Best effort: failures are only logged. */
+  async notify(to: string, clientId: string | undefined, subject: (appName: string) => string, text: string): Promise<void> {
+    const client = clientId ? await this.clientInfo(clientId).catch(() => undefined) : undefined;
+    const appName = client?.name || this.settings.appName;
+    await this.mailer
+      .send({ ...(client?.mailFrom ? { from: client.mailFrom } : {}), to, subject: subject(appName), text, html: `<p>${escapeHtml(text).replace(/\n/g, "<br>")}</p>` })
+      .catch((error) => console.error("sending email failed", errorMessage(error)));
+  }
+
   private async findLink(challengeId: string): Promise<EmailChallenge> {
     const stored = await this.repo.emailChallenges.findActive(challengeId, new Date());
-    if (!stored || this.methodOf(stored) !== "link") throw this.gone();
+    if (!stored || this.methodOf(stored) !== "link" || !GENERIC_PURPOSES.includes(stored.purpose)) throw this.gone();
     return stored;
   }
 
@@ -283,29 +341,43 @@ export class EmailCodeService {
     const action = {
       register: "confirm your email address and finish creating your account",
       verify_email: "confirm your email address",
-      login: "finish signing in"
+      login: "finish signing in",
+      reset_password: "choose a new password"
     }[c.reason];
     const ignore =
       "If you did not request this, you can ignore this email" +
-      (c.reason === "login" ? " — but someone knows your password, so please change it." : ".");
+      (c.reason === "login"
+        ? " — but someone knows your password, so please change it."
+        : c.reason === "reset_password"
+          ? " — your password stays the same."
+          : ".");
+    const reset = c.reason === "reset_password";
     const name = escapeHtml(appName);
     let subject: string, text: string, html: string;
     if (this.methodOf(c) === "link") {
       const params = new URLSearchParams({ id: c.id, token: secret });
       if (c.purpose === "signin") params.set("signin", "1"); // tells the page to start a sign-in first
       if (c.purpose === "master") params.set("master", "1"); // approves a master sign-in waiting elsewhere
-      const url = `${mail.uiOrigin}/verify-email?${params}`;
-      subject = c.reason === "login" ? `Sign in to ${appName}` : `Confirm your email for ${appName}`;
+      const url = `${mail.uiOrigin}/${reset ? "reset-password" : "verify-email"}?${params}`;
+      subject = reset
+        ? `Reset your ${appName} password`
+        : c.reason === "login"
+          ? `Sign in to ${appName}`
+          : `Confirm your email for ${appName}`;
       text = [`Open this link to ${action}:`, "", url, "", expires, "", ignore].join("\n");
       html =
         `<p>Open this link to ${action}:</p>` +
         `<p><a href="${escapeHtml(url)}" style="display:inline-block;padding:10px 18px;border-radius:8px;` +
         `background:#4f46e5;color:#fff;text-decoration:none;font-weight:600">` +
-        `${c.reason === "login" ? "Sign in" : "Confirm email"}</a></p>` +
+        `${reset ? "Reset password" : c.reason === "login" ? "Sign in" : "Confirm email"}</a></p>` +
         `<p style="color:#666;font-size:13px">Or paste this address into your browser:<br>${escapeHtml(url)}</p>` +
         `<p>${expires}</p><p style="color:#666">${ignore}</p>`;
     } else {
-      subject = c.reason === "login" ? `${appName} sign-in code: ${secret}` : `${appName} verification code: ${secret}`;
+      subject = reset
+        ? `${appName} password reset code: ${secret}`
+        : c.reason === "login"
+          ? `${appName} sign-in code: ${secret}`
+          : `${appName} verification code: ${secret}`;
       text = [`Your ${appName} code is: ${secret}`, "", `Enter it to ${action}. ${expires}`, "", ignore].join("\n");
       html =
         `<p>Your ${name} code is:</p>` +

@@ -106,6 +106,14 @@ export class DrizzleTokenRepository implements TokenRepository {
     });
   }
 
+  async revokeUser(userId: string): Promise<void> {
+    if (!isUuid(userId)) return;
+    await this.db.transaction(async (tx) => {
+      await tx.update(refreshTokens).set({ revoked: true }).where(eq(refreshTokens.userId, userId));
+      await tx.delete(accessTokens).where(eq(accessTokens.userId, userId));
+    });
+  }
+
   async revokeClient(clientId: string): Promise<void> {
     await this.db.transaction(async (tx) => {
       await tx.update(refreshTokens).set({ revoked: true }).where(eq(refreshTokens.clientId, clientId));

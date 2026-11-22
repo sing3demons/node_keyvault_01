@@ -94,6 +94,10 @@ export class MongoTokenRepository implements TokenRepository {
     return this.revokeWhere({ userId, deviceId });
   }
 
+  revokeUser(userId: string): Promise<void> {
+    return this.revokeWhere({ userId });
+  }
+
   revokeClient(clientId: string): Promise<void> {
     return this.revokeWhere({ clientId });
   }

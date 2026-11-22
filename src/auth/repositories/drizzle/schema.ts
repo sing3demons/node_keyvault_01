@@ -95,8 +95,8 @@ export const emailChallenges = pgTable(
   "email_challenges",
   {
     id: text("id").primaryKey(),
-    purpose: text("purpose", { enum: ["signin", "verify", "master"] }).notNull(),
-    reason: text("reason", { enum: ["register", "verify_email", "login"] }).notNull(),
+    purpose: text("purpose", { enum: ["signin", "verify", "master", "reset"] }).notNull(),
+    reason: text("reason", { enum: ["register", "verify_email", "login", "reset_password"] }).notNull(),
     method: text("method", { enum: ["code", "link"] }).notNull().default("code"),
     // NULL for master sign-in challenges
     userId: uuid("user_id")

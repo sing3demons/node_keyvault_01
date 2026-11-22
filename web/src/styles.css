@@ -482,6 +482,25 @@ label {
   background: var(--border);
 }
 
+.link-btn {
+  justify-self: end;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 500;
+}
+.link-btn:hover:not(:disabled) {
+  background: none;
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+.notice-text {
+  color: var(--success);
+  font-size: 13px;
+}
+
 /* account / register name fields */
 .name-row {
   display: grid;

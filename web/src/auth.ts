@@ -302,7 +302,7 @@ export interface PendingVerification {
   challengeId: string;
   /** Masked address the code went to. */
   email: string;
-  reason: "register" | "verify_email" | "login";
+  reason: "register" | "verify_email" | "login" | "reset_password";
   /** "code": type the 6 digits; "link": open the email, this page notices (emailChallengeStatus). */
   method: "code" | "link";
   expiresAt: string;
@@ -359,6 +359,20 @@ export const emailLinkPending = () => typeof document !== "undefined" && /(?:^|;
 /** Login page: finish the sign-in with the waiting link -> { redirect } to the app's callback. */
 export const resumeEmailLink = (requestId: string) =>
   postJson<{ redirect: string }>("/auth/email/link/resume", { request_id: requestId });
+
+/** Forgot password: the address is only included when an email address was typed in. */
+export type PendingReset = Omit<PendingVerification, "email"> & { email?: string };
+
+/**
+ * Emails a reset code / link (per the app's email_verification) if the account exists — the answer is the same
+ * either way. Asking again re-sends it (after the cooldown).
+ */
+export const forgotPassword = (identifier: string, requestId?: string) =>
+  postJson<PendingReset>("/auth/password/forgot", { identifier, ...(requestId ? { request_id: requestId } : {}) });
+
+/** Sets the new password with the emailed code or link token; every session of the account is signed out. */
+export const resetPassword = (challengeId: string, secret: { code: string } | { token: string }, password: string) =>
+  postJson<{ reset: true; continue?: string }>("/auth/password/reset", { challengeId, ...secret, password });
 
 export const resendEmailCode = (challengeId: string) => postJson<PendingVerification>("/auth/email/resend", { challengeId });
 

@@ -1,10 +1,10 @@
 // Short-lived challenges: WebAuthn (passkey) challenges and emailed codes / links.
 
-import { and, eq, gt, lt, sql } from "drizzle-orm";
+import { and, desc, eq, gt, lt, sql } from "drizzle-orm";
 import type { EmailChallenge, WebAuthnChallenge } from "../../model.js";
 import type { ChallengeRepository, EmailChallengeRepository } from "../../repository.js";
 import { emailChallenges, webauthnChallenges } from "./schema.js";
-import { clean, write, type Db, type Tx } from "./shared.js";
+import { clean, isUuid, write, type Db, type Tx } from "./shared.js";
 
 export class DrizzleChallengeRepository implements ChallengeRepository {
   constructor(private readonly db: Db) {}
@@ -36,6 +36,17 @@ export class DrizzleEmailChallengeRepository implements EmailChallengeRepository
 
   async findActive(id: string, now: Date): Promise<EmailChallenge | null> {
     const [row] = await this.db.select().from(emailChallenges).where(and(eq(emailChallenges.id, id), gt(emailChallenges.expiresAt, now)));
+    return clean<EmailChallenge>(row);
+  }
+
+  async findLatestActive(userId: string, purpose: EmailChallenge["purpose"], now: Date): Promise<EmailChallenge | null> {
+    if (!isUuid(userId)) return null;
+    const [row] = await this.db
+      .select()
+      .from(emailChallenges)
+      .where(and(eq(emailChallenges.userId, userId), eq(emailChallenges.purpose, purpose), gt(emailChallenges.expiresAt, now)))
+      .orderBy(desc(emailChallenges.sentAt))
+      .limit(1);
     return clean<EmailChallenge>(row);
   }
 

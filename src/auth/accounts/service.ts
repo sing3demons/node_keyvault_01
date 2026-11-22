@@ -103,6 +103,15 @@ export class AccountService {
     return user;
   }
 
+  /** Replaces the user's password (or adds one if they have none). Input is validated by `newPassword`. */
+  async setPassword(userId: string, password: string): Promise<void> {
+    const user = await this.require(userId);
+    const { value, algorithm } = await this.hasher.hash(password);
+    const current = user.credentials.find(isPassword);
+    if (current) await this.repo.users.updateSecret(user.id, current.id, value, algorithm);
+    else await this.repo.users.addCredential(user.id, { id: randomUUID(), type: "password", value, algorithm, createdAt: new Date() });
+  }
+
   async require(userId: string): Promise<User> {
     const user = await this.repo.users.findById(userId);
     if (!user) throw new HttpError(404, "User not found");

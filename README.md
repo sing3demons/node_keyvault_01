@@ -141,6 +141,14 @@ type Credential =
 - รหัสเก็บเป็น SHA-256 เท่านั้น, อายุ `EMAIL_CODE_TTL` (10 นาที), ผิดได้ `EMAIL_CODE_MAX_ATTEMPTS` ครั้ง, ส่งซ้ำได้ทุก `EMAIL_CODE_RESEND_COOLDOWN` วินาที
 - ส่งผ่าน SMTP (`SMTP_URL`, `MAIL_FROM`); ไม่ตั้ง `SMTP_URL` = พิมพ์รหัสลง log ของ server (dev เท่านั้น)
 
+**ลืม password**
+
+- หน้า login → "Forgot password?" → กรอก username หรือ email → ส่งรหัส 6 หลัก หรือ link `<origin>/reset-password?id=…&token=…` ไปที่ email ของบัญชี (ตาม `email_verification` ของ client) → ตั้ง password ใหม่
+- ตอบเหมือนกันไม่ว่าบัญชีจะมีอยู่หรือไม่ และไม่แสดง email ของบัญชีที่ค้นด้วย username (แสดงแค่ email ที่พิมพ์มาแบบ mask)
+- กดขอซ้ำ = ส่งรหัสใหม่ของ challenge เดิม (ต้องรอ `EMAIL_CODE_RESEND_COOLDOWN`, ไม่เกิน `EMAIL_CODE_MAX_SENDS` ครั้ง) — กันยิง email ถล่มกล่องจดหมาย; ผิดได้ `EMAIL_CODE_MAX_ATTEMPTS` ครั้ง
+- reset สำเร็จ: **sign out ทุกอุปกรณ์** (revoke token ทั้งหมดของบัญชี), email นับเป็นยืนยันแล้ว, ส่ง email แจ้ง "password was changed"; passkey ยังใช้ได้เหมือนเดิม
+- รหัส / link ของ reset ใช้กับ `/auth/email/*` ไม่ได้ และกลับกัน
+
 **Devices (อุปกรณ์ที่เคย login)**
 
 - ทุกครั้งที่ login สำเร็จ (password / passkey / รหัส email) จะบันทึกอุปกรณ์: browser + OS (จาก User-Agent), IP, วันที่ login ครั้งแรก/ล่าสุด, ใช้งานล่าสุด (อัปเดตตอน refresh token), วิธี login, จำนวนครั้ง
@@ -156,6 +164,7 @@ type Credential =
 | `sign-in/` | สมัคร, login ด้วย password / passkey, ขั้นยืนยัน email (code / link) |
 | `accounts/` | `/auth/me`, `/admin/users`, ตรวจ password, `UserDirectory` ให้โมดูล secrets |
 | `email/` | รหัส / link ที่ส่งทาง email |
+| `password-reset/` | ลืม password (รหัส / link ทาง email → password ใหม่) |
 | `devices/` · `webauthn/` | อุปกรณ์ที่เคย login · จัดการ passkey |
 | `clients/` · `master/` | OAuth clients + owners · master account และ login ของ master |
 
@@ -189,7 +198,7 @@ pnpm test:e2e --db postgres            # DB เดียว
 pnpm test:e2e --only clients,master    # บาง suite
 ```
 
-suite อยู่ใน `test/e2e/*.test.mjs` (email code / link, clients, client_credentials, master, owners, secrets, mail_from); ค่าที่ server ใช้ตอนทดสอบกำหนดใน `test/e2e/run.mjs` จึงไม่ขึ้นกับ `.env` ของเครื่อง; secret ที่ทดสอบสร้างใน Key Vault emulator ถูกลบตอนจบ
+suite อยู่ใน `test/e2e/*.test.mjs` (email code / link, clients, client_credentials, master, owners, secrets, mail_from, passkeys, password reset); ค่าที่ server ใช้ตอนทดสอบกำหนดใน `test/e2e/run.mjs` จึงไม่ขึ้นกับ `.env` ของเครื่อง; secret ที่ทดสอบสร้างใน Key Vault emulator ถูกลบตอนจบ
 
 ## Endpoint
 
@@ -200,6 +209,7 @@ suite อยู่ใน `test/e2e/*.test.mjs` (email code / link, clients, clie
 - `POST /auth/login/password` (`username` = username หรือ email) → `{ redirect }` หรือ `{ verify }` (ต้องกรอกรหัสจาก email ต่อ)
 - `POST /auth/email/verify` (`challengeId`, `code`, `request_id?`) → `{ redirect }` (ขั้น login) หรือ `{ verified: true }` · `POST /auth/email/resend` (`challengeId`)
 - client แบบ link: `POST /auth/email/link` (`challengeId`, `token`, `request_id?`) → `{ verified }` / `{ continue }` (+ cookie) / `{ redirect }` · `POST /auth/email/link/resume` (`request_id`) → `{ redirect }` · `POST /auth/email/status` (`challengeId`) → `{ pending }` / `{ verified }`
+- `POST /auth/password/forgot` (`identifier` = username หรือ email, `request_id?`) → `{ challengeId, method, reason, expiresAt, resendAt, email? }` · `POST /auth/password/reset` (`challengeId`, `code` หรือ `token`, `password`) → `{ reset: true, continue? }`
 - `GET /auth/me` · `PATCH /auth/me` · `POST /auth/me/email/verification` (Bearer)
 - `GET /auth/me/devices` · `POST /auth/me/devices/:id/sign-out` · `DELETE /auth/me/devices/:id` (Bearer)
 - `POST /auth/webauthn/login/options` · `POST /auth/webauthn/login/verify`

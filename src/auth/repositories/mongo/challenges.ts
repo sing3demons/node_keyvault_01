@@ -40,6 +40,10 @@ export class MongoEmailChallengeRepository implements EmailChallengeRepository {
     return fromDoc<EmailChallenge>(await this.col.findOne({ _id: id, expiresAt: { $gt: now } }));
   }
 
+  async findLatestActive(userId: string, purpose: EmailChallenge["purpose"], now: Date): Promise<EmailChallenge | null> {
+    return fromDoc<EmailChallenge>(await this.col.findOne({ userId, purpose, expiresAt: { $gt: now } }, { sort: { sentAt: -1 } }));
+  }
+
   async recordFailedAttempt(id: string): Promise<number | null> {
     const doc = await this.col.findOneAndUpdate({ _id: id }, { $inc: { attempts: 1 } }, { returnDocument: "after" });
     return doc ? doc.attempts : null;
@@ -58,6 +62,6 @@ export class MongoEmailChallengeRepository implements EmailChallengeRepository {
   }
 
   async ensureIndexes(): Promise<void> {
-    await this.col.createIndex({ expiresAt: 1 }, TTL);
+    await Promise.all([this.col.createIndex({ expiresAt: 1 }, TTL), this.col.createIndex({ userId: 1, purpose: 1, sentAt: -1 })]);
   }
 }

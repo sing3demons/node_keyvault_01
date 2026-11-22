@@ -49,6 +49,8 @@ const preferredLangIssue = { message: "preferredLang must be one of profiles[].l
 
 // ---------------------------------------------------------------- /auth
 
+const newPassword = z.string().min(8, "Password must be 8-256 characters").max(256, "Password must be 8-256 characters");
+
 export const registerBody = z
   .object({
     /** From the login page: entering the emailed code then also signs the new user in. */
@@ -59,7 +61,7 @@ export const registerBody = z
       .toLowerCase()
       .regex(/^[a-z0-9_.-]{3,32}$/, "Username must be 3-32 chars: a-z, 0-9, _ . -"),
     email,
-    password: z.string().min(8, "Password must be 8-256 characters").max(256, "Password must be 8-256 characters"),
+    password: newPassword,
     profiles,
     preferredLang: langTag.optional()
   })
@@ -93,6 +95,27 @@ export const emailCodeBody = z.object({
 });
 
 export const emailResendBody = z.object({ challengeId: nonEmpty.max(64) });
+
+/** POST /auth/password/forgot — `request_id` (login page) picks the client: its email method and name. */
+export const forgotPasswordBody = z.object({
+  identifier: loginIdentifier,
+  request_id: nonEmpty.optional()
+});
+
+/** POST /auth/password/reset — the emailed 6-digit `code`, or the link's `token`. */
+export const resetPasswordBody = z
+  .object({
+    challengeId: nonEmpty.max(64),
+    code: z
+      .string()
+      .transform((v) => v.replace(/[\s-]/g, ""))
+      .pipe(z.string().regex(/^\d{6}$/, "code must be the 6 digits from the email"))
+      .optional(),
+    token: base64url.max(64).optional(),
+    password: newPassword
+  })
+  .refine((v) => (v.code === undefined) !== (v.token === undefined), "send either code or token")
+  .transform(({ code, token, ...rest }) => ({ ...rest, secret: code ?? token ?? "" }));
 
 /** POST /auth/email/link — from the page the emailed link opens (`request_id` = its own sign-in request). */
 export const emailLinkBody = z.object({

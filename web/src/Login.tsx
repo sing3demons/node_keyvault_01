@@ -2,6 +2,8 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   confirmSignInCode,
   emailLinkPending,
+  forgotPassword,
+  resetPassword,
   openEmailLink,
   resumeEmailLink,
   handleCallback,
@@ -10,6 +12,7 @@ import {
   passkeysSupported,
   register,
   startLogin,
+  type PendingReset,
   type PendingVerification,
   type SignInStep
 } from "./auth";
@@ -37,7 +40,8 @@ export function Shell({ title, sub, children }: { title: string; sub: string; ch
 /** /login?request_id=… — the authorization server's sign-in step. */
 export function LoginPage() {
   const requestId = new URLSearchParams(location.search).get("request_id");
-  const [mode, setMode] = useState<"signin" | "register">("signin");
+  const [mode, setMode] = useState<"signin" | "register" | "forgot">("signin");
+  const [notice, setNotice] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
@@ -116,9 +120,10 @@ export function LoginPage() {
     run(() => loginWithPassword(requestId, username, password));
   };
 
-  const switchMode = (m: "signin" | "register") => {
+  const switchMode = (m: "signin" | "register" | "forgot") => {
     setMode(m);
     setError("");
+    setNotice("");
   };
 
   if (fromLink && !error) {
@@ -151,6 +156,24 @@ export function LoginPage() {
               restartIfRequestExpired(e);
               throw e;
             }
+          }}
+        />
+      </Shell>
+    );
+  }
+
+  if (mode === "forgot") {
+    return (
+      <Shell title="Reset password" sub="Key Vault Secrets">
+        <ForgotPassword
+          requestId={requestId}
+          initialIdentifier={username}
+          onCancel={() => switchMode("signin")}
+          onDone={(identifier) => {
+            switchMode("signin");
+            setUsername(identifier);
+            setPassword("");
+            setNotice("Password changed — sign in with your new password.");
           }}
         />
       </Shell>
@@ -226,6 +249,11 @@ export function LoginPage() {
           />
           {mode === "register" && <span className="hint">At least 8 characters</span>}
         </label>
+        {mode === "signin" && (
+          <button type="button" className="link-btn" onClick={() => switchMode("forgot")} disabled={busy}>
+            Forgot password?
+          </button>
+        )}
         {mode === "register" && (
           <label>
             Confirm password
@@ -238,6 +266,7 @@ export function LoginPage() {
             />
           </label>
         )}
+        {notice && !error && <div className="notice-text">{notice}</div>}
         <div className="error-text">{error}</div>
         <button className="btn-primary auth-submit" type="submit" disabled={busy}>
           {mode === "signin" ? "Sign in" : "Create account"}
@@ -257,6 +286,250 @@ export function LoginPage() {
             </button>
           </>
         )}
+      </form>
+    </Shell>
+  );
+}
+
+/**
+ * Login page, "Forgot password?": ask for the username / email, then either take the emailed code and the new
+ * password here (code), or tell the user to open the emailed link (link: ResetPasswordPage).
+ */
+function ForgotPassword({
+  requestId,
+  initialIdentifier,
+  onDone,
+  onCancel
+}: {
+  requestId: string;
+  initialIdentifier: string;
+  onDone: (identifier: string) => void;
+  onCancel: () => void;
+}) {
+  const [identifier, setIdentifier] = useState(initialIdentifier);
+  const [pending, setPending] = useState<PendingReset | null>(null);
+  const [code, setCode] = useState("");
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const attempt = async (fn: () => Promise<void>) => {
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      await fn();
+    } catch (e) {
+      setError((e as Error).message);
+      restartIfRequestExpired(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const send = (again: boolean) =>
+    attempt(async () => {
+      setPending(await forgotPassword(identifier.trim(), requestId));
+      if (again) setNotice(pending?.method === "link" ? "A new link is on its way." : "A new code is on its way.");
+    });
+
+  const submitReset = (e: FormEvent) => {
+    e.preventDefault();
+    if (!pending) return;
+    if (password !== confirm) return setError("Passwords do not match");
+    attempt(async () => {
+      await resetPassword(pending.challengeId, { code }, password);
+      onDone(identifier.trim());
+    });
+  };
+
+  if (!pending) {
+    return (
+      <form
+        className="dlg-body"
+        onSubmit={(e) => {
+          e.preventDefault();
+          send(false);
+        }}
+      >
+        <p>Enter your username or email. If an account matches, we’ll email you a way to choose a new password.</p>
+        <label>
+          Username or email
+          <input
+            value={identifier}
+            onChange={(e) => setIdentifier(e.target.value)}
+            autoComplete="username"
+            autoFocus
+            required
+            maxLength={254}
+          />
+        </label>
+        <div className="error-text">{error}</div>
+        <button className="btn-primary auth-submit" type="submit" disabled={busy}>
+          {busy ? "Sending…" : "Send reset email"}
+        </button>
+        <button type="button" className="btn-ghost auth-submit" onClick={onCancel} disabled={busy}>
+          Back to sign in
+        </button>
+      </form>
+    );
+  }
+
+  const where = pending.email ? <strong>{pending.email}</strong> : "the email address of the account";
+  const wait = Math.max(0, Math.ceil((new Date(pending.resendAt).getTime() - now) / 1000));
+  const isLink = pending.method === "link";
+  const actions = (
+    <div className="code-actions">
+      <button type="button" className="btn-ghost" onClick={() => send(true)} disabled={busy || wait > 0}>
+        {`Resend ${isLink ? "link" : "code"}${wait > 0 ? ` (${wait}s)` : ""}`}
+      </button>
+      <button type="button" className="btn-ghost" onClick={onCancel} disabled={busy}>
+        Back to sign in
+      </button>
+    </div>
+  );
+
+  if (isLink) {
+    return (
+      <div className="dlg-body">
+        <p>
+          If an account matches, we sent a link to {where}. Open it to choose a new password — you can close this tab.
+        </p>
+        <span className="hint">Check your spam folder if it has not arrived.</span>
+        {notice && !error && <div className="notice-text">{notice}</div>}
+        <div className="error-text">{error}</div>
+        {actions}
+      </div>
+    );
+  }
+
+  return (
+    <form className="dlg-body" onSubmit={submitReset}>
+      <p>If an account matches, we sent a 6-digit code to {where}. Enter it and choose a new password.</p>
+      <label>
+        Code
+        <input
+          className="code-input"
+          value={code}
+          onChange={(e) => setCode(e.target.value)}
+          inputMode="numeric"
+          autoComplete="one-time-code"
+          autoFocus
+          required
+          maxLength={9}
+        />
+      </label>
+      <label>
+        New password
+        <input
+          type="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          autoComplete="new-password"
+          required
+          minLength={8}
+          maxLength={256}
+        />
+        <span className="hint">At least 8 characters. Every device signed in to the account will be signed out.</span>
+      </label>
+      <label>
+        Confirm new password
+        <input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="new-password" required />
+      </label>
+      {notice && !error && <div className="notice-text">{notice}</div>}
+      <div className="error-text">{error}</div>
+      <button className="btn-primary auth-submit" type="submit" disabled={busy}>
+        {busy ? "Saving…" : "Set new password"}
+      </button>
+      {actions}
+    </form>
+  );
+}
+
+/** /reset-password?id=…&token=… — opened from the emailed reset link (client email_verification=link). */
+export function ResetPasswordPage() {
+  const q = new URLSearchParams(location.search);
+  const id = q.get("id");
+  const token = q.get("token");
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [done, setDone] = useState<{ continue?: string } | null>(null);
+
+  if (!id || !token) {
+    return (
+      <Shell title="Invalid link" sub="Key Vault Secrets">
+        <div className="dlg-body">
+          <p>This link is incomplete. Open it straight from the email, or request a new one from the sign-in page.</p>
+        </div>
+      </Shell>
+    );
+  }
+
+  if (done) {
+    return (
+      <Shell title="Password changed" sub="Key Vault Secrets">
+        <div className="dlg-body">
+          <p>Your new password is set, and every device was signed out.</p>
+          {done.continue ? (
+            <button className="btn-primary auth-submit" onClick={() => location.assign(done.continue!)}>
+              Sign in
+            </button>
+          ) : (
+            <p className="hint">You can sign in with it now and close this tab.</p>
+          )}
+        </div>
+      </Shell>
+    );
+  }
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (password !== confirm) return setError("Passwords do not match");
+    setBusy(true);
+    setError("");
+    try {
+      setDone(await resetPassword(id, { token }, password));
+    } catch (err) {
+      setError((err as Error).message);
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Shell title="Choose a new password" sub="Key Vault Secrets">
+      <form className="dlg-body" onSubmit={submit}>
+        <label>
+          New password
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="new-password"
+            autoFocus
+            required
+            minLength={8}
+            maxLength={256}
+          />
+          <span className="hint">At least 8 characters. Every device signed in to the account will be signed out.</span>
+        </label>
+        <label>
+          Confirm new password
+          <input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="new-password" required />
+        </label>
+        <div className="error-text">{error}</div>
+        <button className="btn-primary auth-submit" type="submit" disabled={busy}>
+          {busy ? "Saving…" : "Set new password"}
+        </button>
       </form>
     </Shell>
   );

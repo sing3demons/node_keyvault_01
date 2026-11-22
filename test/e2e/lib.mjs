@@ -77,7 +77,7 @@ export async function nextMail(to) {
       seen.add(m.ID);
       const full = await (await fetch(`${MAIL}/api/v1/message/${m.ID}`)).json();
       const code = /code is: (\d{6})/.exec(full.Text)?.[1];
-      const url = /(http\S+\/verify-email\?\S+)/.exec(full.Text)?.[1];
+      const url = /(http\S+\/(?:verify-email|reset-password)\?\S+)/.exec(full.Text)?.[1];
       const link = url ? new URL(url) : null;
       return { code, link, id: link?.searchParams.get("id"), token: link?.searchParams.get("token"), subject: full.Subject };
     }

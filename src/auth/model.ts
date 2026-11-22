@@ -168,9 +168,10 @@ export interface RefreshToken extends AccessToken {
  * "signin": a step of the login page, bound to an authorization request — confirming it signs the user in.
  * "verify": only proves the address (account page / API registration); confirming it signs nobody in.
  */
-export type EmailChallengePurpose = "signin" | "verify" | "master";
+/** "reset": forgot password — the code / link lets the user choose a new password (auth/password-reset/). */
+export type EmailChallengePurpose = "signin" | "verify" | "master" | "reset";
 /** Why the code was sent: picks the email wording and the sign-in method recorded for the device. */
-export type EmailChallengeReason = "register" | "verify_email" | "login";
+export type EmailChallengeReason = "register" | "verify_email" | "login" | "reset_password";
 
 /**
  * "code": a 6-digit code typed into the page that asked for it.

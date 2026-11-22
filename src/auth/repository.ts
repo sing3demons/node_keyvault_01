@@ -77,6 +77,8 @@ export interface ChallengeRepository {
 export interface EmailChallengeRepository {
   create(challenge: EmailChallenge): Promise<void>;
   findActive(id: string, now: Date): Promise<EmailChallenge | null>;
+  /** The user's most recently sent, unexpired challenge of this purpose. */
+  findLatestActive(userId: string, purpose: EmailChallenge["purpose"], now: Date): Promise<EmailChallenge | null>;
   /** Atomically count a wrong code; returns the new attempt count, or null if the challenge is gone. */
   recordFailedAttempt(id: string): Promise<number | null>;
   /** Link confirmed: set approvedAt. @returns false if the challenge is gone */
@@ -144,6 +146,8 @@ export interface TokenRepository {
   revokeFamily(familyId: string): Promise<void>;
   /** Same as revokeFamily, for every session the user started on the device. */
   revokeDevice(userId: string, deviceId: string): Promise<void>;
+  /** Every token issued to the user, on every device and client (password reset). */
+  revokeUser(userId: string): Promise<void>;
   /** Every token issued to the client (client deleted / secret compromised). */
   revokeClient(clientId: string): Promise<void>;
   /** Devices of the user that still hold a usable (unrevoked, unexpired) refresh token. */

@@ -64,7 +64,9 @@ const SUITES = {
   owners: {},
   secrets: {},
   "mail-from": {},
-  passkeys: {}
+  passkeys: {},
+  "password-reset": {},
+  "password-reset-link": { file: "password-reset", EMAIL_VERIFICATION: "link", MODE: "link" }
 };
 
 // ------------------------------------------------------------------ args

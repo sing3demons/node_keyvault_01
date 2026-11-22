@@ -8,6 +8,7 @@
 //   webauthn/  passkeys
 //   clients/   OAuth clients and their owners (/admin/clients, /admin/client-owners)
 //   master/    the master account (bootstrap admin of clients) and its sign-in
+//   password-reset/  forgot password (emailed code / link -> new password)
 
 import type { Hono, MiddlewareHandler } from "hono";
 import type { AppConfig } from "../config.js";
@@ -30,6 +31,8 @@ import type { IdTokenIssuer } from "./oauth/oidc.js";
 import { registerOAuthRoutes } from "./oauth/routes.js";
 import { OAuthService, SUPPORTED_SCOPES } from "./oauth/service.js";
 import type { AuthRepository } from "./repository.js";
+import { registerPasswordResetRoutes } from "./password-reset/routes.js";
+import { PasswordResetService } from "./password-reset/service.js";
 import { registerSignInRoutes } from "./sign-in/routes.js";
 import { SignInService } from "./sign-in/service.js";
 import { registerPasskeyRoutes } from "./webauthn/routes.js";
@@ -92,6 +95,7 @@ export async function createAuthModule(config: AppConfig, repo: AuthRepository, 
   const accounts = new AccountService(repo, new SecretHasher(new Argon2idHasher()), config.adminUsernames);
   await accounts.bootstrapAdmins();
   const signIn = new SignInService(repo, oauth, accounts, clients, emailCodes);
+  const passwordReset = new PasswordResetService(repo, oauth, accounts, clients, emailCodes);
   const masterAuth = new MasterAuthService(repo, emailCodes, owners, masterAccounts, config.masterEmailVerification);
   const webauthn = new WebAuthnService(repo, config.webauthn);
 
@@ -105,6 +109,7 @@ export async function createAuthModule(config: AppConfig, repo: AuthRepository, 
     registerRoutes(app) {
       registerOAuthRoutes(app, { oauth, idTokens, bearer });
       registerSignInRoutes(app, { signIn, oauth, webauthn, ctx, bearer });
+      registerPasswordResetRoutes(app, { passwordReset, ctx });
       registerAccountRoutes(app, { accounts, bearer });
       registerDeviceRoutes(app, { devices, bearer });
       registerPasskeyRoutes(app, { webauthn, bearer });
