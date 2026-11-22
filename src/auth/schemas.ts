@@ -102,6 +102,13 @@ export const forgotPasswordBody = z.object({
   request_id: nonEmpty.optional()
 });
 
+/** POST /auth/me/password — signed in: change the password (other sessions are signed out unless told not to). */
+export const changePasswordBody = z.object({
+  currentPassword: z.string().min(1, "Enter your current password").max(256),
+  newPassword,
+  signOutOthers: z.boolean().default(true)
+});
+
 /** POST /auth/password/reset — the emailed 6-digit `code`, or the link's `token`. */
 export const resetPasswordBody = z
   .object({

@@ -146,8 +146,8 @@ export interface TokenRepository {
   revokeFamily(familyId: string): Promise<void>;
   /** Same as revokeFamily, for every session the user started on the device. */
   revokeDevice(userId: string, deviceId: string): Promise<void>;
-  /** Every token issued to the user, on every device and client (password reset). */
-  revokeUser(userId: string): Promise<void>;
+  /** Every token issued to the user, on every device and client, except the session `exceptFamilyId` (password reset / change). */
+  revokeUser(userId: string, exceptFamilyId?: string): Promise<void>;
   /** Every token issued to the client (client deleted / secret compromised). */
   revokeClient(clientId: string): Promise<void>;
   /** Devices of the user that still hold a usable (unrevoked, unexpired) refresh token. */

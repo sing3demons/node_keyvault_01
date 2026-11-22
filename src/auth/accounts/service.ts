@@ -103,6 +103,12 @@ export class AccountService {
     return user;
   }
 
+  /** Whether `password` is the user's current password. */
+  async checkPassword(userId: string, password: string): Promise<boolean> {
+    const user = await this.require(userId);
+    return (await this.hasher.verify(user.credentials.find(isPassword), password)).ok;
+  }
+
   /** Replaces the user's password (or adds one if they have none). Input is validated by `newPassword`. */
   async setPassword(userId: string, password: string): Promise<void> {
     const user = await this.require(userId);

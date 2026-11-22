@@ -1,6 +1,6 @@
 // OAuth state: pending authorization requests, authorization codes, access / refresh tokens.
 
-import { and, eq, gt, isNotNull, lt } from "drizzle-orm";
+import { and, eq, gt, isNotNull, lt, ne } from "drizzle-orm";
 import type { AccessToken, AuthCode, AuthRequest, RefreshToken } from "../../model.js";
 import type { AuthCodeRepository, AuthRequestRepository, TokenRepository } from "../../repository.js";
 import { accessTokens, authCodes, authRequests, refreshTokens } from "./schema.js";
@@ -106,11 +106,16 @@ export class DrizzleTokenRepository implements TokenRepository {
     });
   }
 
-  async revokeUser(userId: string): Promise<void> {
+  async revokeUser(userId: string, exceptFamilyId?: string): Promise<void> {
     if (!isUuid(userId)) return;
     await this.db.transaction(async (tx) => {
-      await tx.update(refreshTokens).set({ revoked: true }).where(eq(refreshTokens.userId, userId));
-      await tx.delete(accessTokens).where(eq(accessTokens.userId, userId));
+      await tx
+        .update(refreshTokens)
+        .set({ revoked: true })
+        .where(and(eq(refreshTokens.userId, userId), exceptFamilyId !== undefined ? ne(refreshTokens.familyId, exceptFamilyId) : undefined));
+      await tx
+        .delete(accessTokens)
+        .where(and(eq(accessTokens.userId, userId), exceptFamilyId !== undefined ? ne(accessTokens.familyId, exceptFamilyId) : undefined));
     });
   }
 

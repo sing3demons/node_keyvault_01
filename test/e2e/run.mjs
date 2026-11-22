@@ -66,6 +66,7 @@ const SUITES = {
   "mail-from": {},
   passkeys: {},
   "password-reset": {},
+  "password-change": {},
   "password-reset-link": { file: "password-reset", EMAIL_VERIFICATION: "link", MODE: "link" }
 };
 

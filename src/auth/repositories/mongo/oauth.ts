@@ -94,8 +94,8 @@ export class MongoTokenRepository implements TokenRepository {
     return this.revokeWhere({ userId, deviceId });
   }
 
-  revokeUser(userId: string): Promise<void> {
-    return this.revokeWhere({ userId });
+  revokeUser(userId: string, exceptFamilyId?: string): Promise<void> {
+    return this.revokeWhere({ userId, ...(exceptFamilyId !== undefined ? { familyId: { $ne: exceptFamilyId } } : {}) });
   }
 
   revokeClient(clientId: string): Promise<void> {
@@ -124,7 +124,7 @@ export class MongoTokenRepository implements TokenRepository {
   }
 
   /** Revoke matching refresh tokens and delete matching access tokens. */
-  private async revokeWhere(filter: Record<string, string>): Promise<void> {
+  private async revokeWhere(filter: Record<string, string | { $ne: string }>): Promise<void> {
     await Promise.all([this.refresh$.updateMany(filter, { $set: { revoked: true } }), this.access$.deleteMany(filter)]);
   }
 }

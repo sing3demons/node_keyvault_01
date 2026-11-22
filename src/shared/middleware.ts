@@ -14,6 +14,8 @@ export interface AuthenticatedUser {
   roles: string[];
   /** Device the token was issued to (absent for tokens from before devices were tracked). */
   deviceId?: string;
+  /** The sign-in session (access + refresh tokens) the token belongs to. */
+  familyId?: string;
 }
 
 /** Resolves an access token to its user, or null when it is unknown or expired. */

@@ -499,12 +499,15 @@ interface AccountProps {
   onSaved: (account: Account) => void;
   /** The email was verified (dialog stays open). */
   onVerified: (account: Account) => void;
+  onPasswordChanged: (signedOutOthers: boolean) => void;
 }
 
-export function AccountDialog({ account, open, onClose, onSaved, onVerified }: AccountProps) {
+export function AccountDialog({ account, open, onClose, onSaved, onVerified, onPasswordChanged }: AccountProps) {
   const [verifying, setVerifying] = useState<PendingVerification | null>(null);
+  const [changingPassword, setChangingPassword] = useState(false);
   const close = () => {
     setVerifying(null);
+    setChangingPassword(false);
     onClose();
   };
   return (
@@ -533,8 +536,23 @@ export function AccountDialog({ account, open, onClose, onSaved, onVerified }: A
               }}
             />
           </div>
+        ) : changingPassword ? (
+          <ChangePasswordForm
+            onCancel={() => setChangingPassword(false)}
+            onChanged={(signedOutOthers) => {
+              setChangingPassword(false);
+              onPasswordChanged(signedOutOthers);
+            }}
+          />
         ) : (
-          <AccountForm key={account.id} account={account} onClose={close} onSaved={onSaved} onVerify={setVerifying} />
+          <AccountForm
+            key={account.id}
+            account={account}
+            onClose={close}
+            onSaved={onSaved}
+            onVerify={setVerifying}
+            onChangePassword={() => setChangingPassword(true)}
+          />
         ))}
     </Modal>
   );
@@ -542,12 +560,92 @@ export function AccountDialog({ account, open, onClose, onSaved, onVerified }: A
 
 type ProfileDraft = { lang: string; label: string; firstName: string; lastName: string };
 
+function ChangePasswordForm({ onCancel, onChanged }: { onCancel: () => void; onChanged: (signedOutOthers: boolean) => void }) {
+  const [current, setCurrent] = useState("");
+  const [next, setNext] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [signOutOthers, setSignOutOthers] = useState(true);
+  const [error, setError] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (next !== confirm) return setError("New passwords do not match");
+    if (next === current) return setError("The new password must be different from the current one");
+    setSaving(true);
+    setError("");
+    try {
+      onChanged((await api.changePassword(current, next, signOutOthers)).signedOutOthers);
+    } catch (e) {
+      setError((e as Error).message);
+      setSaving(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit}>
+      <div className="dlg-body">
+        <h2>Change password</h2>
+        {/* lets password managers pair the new password with the account */}
+        <input type="text" autoComplete="username" hidden readOnly />
+        <label>
+          Current password
+          <input
+            type="password"
+            value={current}
+            onChange={(e) => setCurrent(e.target.value)}
+            autoComplete="current-password"
+            autoFocus
+            required
+            maxLength={256}
+          />
+        </label>
+        <label>
+          New password
+          <input
+            type="password"
+            value={next}
+            onChange={(e) => setNext(e.target.value)}
+            autoComplete="new-password"
+            required
+            minLength={8}
+            maxLength={256}
+          />
+          <span className="hint">At least 8 characters</span>
+        </label>
+        <label>
+          Confirm new password
+          <input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} autoComplete="new-password" required />
+        </label>
+        <label className="check">
+          <input type="checkbox" checked={signOutOthers} onChange={(e) => setSignOutOthers(e.target.checked)} />
+          Sign out all other devices
+        </label>
+        <div className="error-text">{error}</div>
+      </div>
+      <div className="dlg-foot">
+        <button type="button" className="btn-ghost" onClick={onCancel} disabled={saving}>
+          Back
+        </button>
+        <button type="submit" className="btn-primary" disabled={saving}>
+          {saving ? "Saving…" : "Change password"}
+        </button>
+      </div>
+    </form>
+  );
+}
+
 function AccountForm({
   account,
   onClose,
   onSaved,
-  onVerify
-}: { account: Account; onVerify: (pending: PendingVerification) => void } & Pick<AccountProps, "onClose" | "onSaved">) {
+  onVerify,
+  onChangePassword
+}: {
+  account: Account;
+  onVerify: (pending: PendingVerification) => void;
+  onChangePassword: () => void;
+} & Pick<AccountProps, "onClose" | "onSaved">) {
   // one row per UI language, plus any other language the API already has
   const initial: ProfileDraft[] = [
     ...LANGUAGES.map(({ code, label }) => {
@@ -656,6 +754,9 @@ function AccountForm({
         <div className="error-text">{error}</div>
       </div>
       <div className="dlg-foot">
+        <button type="button" className="btn-ghost foot-start" onClick={onChangePassword}>
+          🔒 Change password
+        </button>
         <button type="button" className="btn-ghost" onClick={onClose}>
           Cancel
         </button>

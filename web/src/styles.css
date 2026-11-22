@@ -367,6 +367,9 @@ dialog[open] {
   background: var(--surface-2);
   border-top: 1px solid var(--border);
 }
+.dlg-foot .foot-start {
+  margin-right: auto;
+}
 label {
   display: grid;
   gap: 6px;

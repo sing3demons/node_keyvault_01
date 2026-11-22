@@ -318,7 +318,8 @@ export class OAuthService implements TokenAuthenticator {
       scope: token.scope,
       clientId: token.clientId,
       roles: user.roles,
-      ...(token.deviceId !== undefined ? { deviceId: token.deviceId } : {})
+      ...(token.deviceId !== undefined ? { deviceId: token.deviceId } : {}),
+      familyId: token.familyId
     };
   }
 

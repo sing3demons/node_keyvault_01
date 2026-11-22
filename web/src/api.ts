@@ -236,6 +236,11 @@ export const api = {
   me: () => request<Account>("/auth/me"),
   updateAccount: (update: AccountUpdate) =>
     request<Account>("/auth/me", { method: "PATCH", body: JSON.stringify(update) }),
+  changePassword: (currentPassword: string, newPassword: string, signOutOthers: boolean) =>
+    request<{ changed: true; signedOutOthers: boolean }>("/auth/me/password", {
+      method: "POST",
+      body: JSON.stringify({ currentPassword, newPassword, signOutOthers })
+    }),
   startEmailVerification: () => request<PendingVerification>("/auth/me/email/verification", { method: "POST" }),
   devices: async () => (await request<{ devices: Device[] }>("/auth/me/devices")).devices,
   signOutDevice: (id: string) =>

@@ -7,7 +7,7 @@
 //   - sign-in links sign the user in where the link is opened: the client starts a fresh authorization
 //     request there (OIDC initiate_login_uri) and the link is redeemed on it (inspectLink() then openLink());
 //   - verify-only links mark the address verified; the account page that asked notices by polling (poll()).
-// Password-reset challenges ("reset") are only redeemed through redeem() (auth/password-reset/): the
+// Password-reset challenges ("reset") are only redeemed through redeem() (auth/password/): the
 // generic code / link / resend endpoints refuse them.
 
 import { randomInt, timingSafeEqual } from "node:crypto";

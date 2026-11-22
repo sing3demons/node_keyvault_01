@@ -267,6 +267,10 @@ export function App() {
           refresh(); // new ID Token carrying the updated name / language
           toast(updated.email && !updated.emailVerified ? "Account updated — please verify your email" : "Account updated");
         }}
+        onPasswordChanged={(signedOutOthers) => {
+          setAccountOpen(false);
+          toast(signedOutOthers ? "Password changed — your other devices were signed out" : "Password changed");
+        }}
         onVerified={(updated) => {
           setAccount(updated);
           refresh(); // ID Token's email_verified is now true
