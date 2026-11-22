@@ -101,3 +101,19 @@ export function requireRoleOrMaster(
     });
   };
 }
+
+/**
+ * Client administration (`@UseInterceptors(ClientAdmin)`): a client_admin user's Bearer token, or a master session.
+ * The app supplies the instance: `app.provide(ClientAdmin, new ClientAdmin(oauth, masterSession))`.
+ */
+export class ClientAdmin implements Interceptor {
+  readonly #check: MiddlewareHandler;
+
+  constructor(authenticator: TokenAuthenticator, masterSession: (accessToken: string) => Promise<{ username: string } | null>) {
+    this.#check = requireRoleOrMaster(authenticator, "client_admin", masterSession);
+  }
+
+  intercept(c: Ctx, next: Next) {
+    return this.#check(c, next);
+  }
+}

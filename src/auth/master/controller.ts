@@ -1,35 +1,44 @@
 // /auth/master/*: master sign-in — password, then a code / link to the master's email, then a session token.
 
-import type { Kp } from "../../common/kp/index.js";
-import { parseJsonBody } from "../../shared/http.js";
+import { Controller, Post, type Ctx } from "../../common/kp/index.js";
 import { bearerToken, type RequestContext } from "../http.js";
 import { masterCodeBody, masterLoginBody, masterStatusBody } from "../schemas.js";
 import type { MasterAuthService } from "./auth.js";
 
-export function registerMasterRoutes(app: Kp, { masterAuth, ctx }: { masterAuth: MasterAuthService; ctx: RequestContext }) {
+@Controller("/auth/master")
+export class MasterController {
+  constructor(
+    private readonly masterAuth: MasterAuthService,
+    private readonly http: RequestContext
+  ) {}
+
   /** { username, password } -> { verify } (code or link sent to the master's email) */
-  app.post("/auth/master/login", async (c) => {
-    const { username, password } = await parseJsonBody(c, masterLoginBody);
-    return c.json(await masterAuth.login(username, password, ctx.mail(c)));
-  });
+  @Post("/login")
+  async login(c: Ctx) {
+    const { username, password } = await c.safeBody(masterLoginBody);
+    return c.json(await this.masterAuth.login(username, password, this.http.mail(c)));
+  }
 
   /** { challengeId, code } -> { access_token, expires_in } */
-  app.post("/auth/master/verify", async (c) => {
+  @Post("/verify")
+  async verify(c: Ctx) {
     c.header("Cache-Control", "no-store");
-    const { challengeId, code } = await parseJsonBody(c, masterCodeBody);
-    return c.json(await masterAuth.verifyCode(challengeId, code));
-  });
+    const { challengeId, code } = await c.safeBody(masterCodeBody);
+    return c.json(await this.masterAuth.verifyCode(challengeId, code));
+  }
 
   /** { challengeId } -> { pending } | { access_token, ... } (link opened) */
-  app.post("/auth/master/status", async (c) => {
+  @Post("/status")
+  async status(c: Ctx) {
     c.header("Cache-Control", "no-store");
-    const { challengeId } = await parseJsonBody(c, masterStatusBody);
-    return c.json(await masterAuth.status(challengeId));
-  });
+    const { challengeId } = await c.safeBody(masterStatusBody);
+    return c.json(await this.masterAuth.status(challengeId));
+  }
 
   /** (Bearer master session) */
-  app.post("/auth/master/logout", async (c) => {
-    await masterAuth.logout(bearerToken(c));
+  @Post("/logout")
+  async logout(c: Ctx) {
+    await this.masterAuth.logout(bearerToken(c));
     return c.body(null, 204);
-  });
+  }
 }

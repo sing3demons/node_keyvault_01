@@ -1,36 +1,44 @@
-// /auth/webauthn/*: passkey management for the signed-in user (signing in with one: sign-in/routes.ts).
+// /auth/webauthn/*: passkey management for the signed-in user (signing in with one: sign-in/controller.ts).
 
-import type { Kp, MiddlewareHandler } from "../../common/kp/index.js";
-import { parse, parseJsonBody } from "../../shared/http.js";
+import { Controller, Delete, Get, Patch, Post, UseInterceptors, type Ctx } from "../../common/kp/index.js";
+import { Bearer } from "../../shared/middleware.js";
 import { credentialIdParam, passkeyRegisterVerifyBody, passkeyRenameBody } from "../schemas.js";
 import type { WebAuthnService } from "./webauthn.js";
 
-export function registerPasskeyRoutes(
-  app: Kp,
-  { webauthn, bearer }: { webauthn: WebAuthnService; bearer: MiddlewareHandler }
-) {
-  app.post("/auth/webauthn/register/options", bearer, async (c) => {
+@Controller("/auth/webauthn")
+@UseInterceptors(Bearer)
+export class PasskeyController {
+  constructor(private readonly webauthn: WebAuthnService) {}
+
+  @Post("/register/options")
+  async registrationOptions(c: Ctx) {
     const user = c.get("user");
-    return c.json(await webauthn.registrationOptions(user.id, user.username));
-  });
+    return c.json(await this.webauthn.registrationOptions(user.id, user.username));
+  }
 
-  app.post("/auth/webauthn/register/verify", bearer, async (c) => {
+  @Post("/register/verify")
+  async verifyRegistration(c: Ctx) {
     const user = c.get("user");
-    const body = await parseJsonBody(c, passkeyRegisterVerifyBody);
-    return c.json(await webauthn.verifyRegistration(user.id, body.challengeId, body.credential, body.name), 201);
-  });
+    const body = await c.safeBody(passkeyRegisterVerifyBody);
+    return c.json(await this.webauthn.verifyRegistration(user.id, body.challengeId, body.credential, body.name), 201);
+  }
 
-  app.get("/auth/webauthn/credentials", bearer, async (c) => c.json({ passkeys: await webauthn.list(c.get("user").id) }));
+  @Get("/credentials")
+  async list(c: Ctx) {
+    return c.json({ passkeys: await this.webauthn.list(c.get("user").id) });
+  }
 
-  app.patch("/auth/webauthn/credentials/:id", bearer, async (c) => {
-    const { id } = parse(credentialIdParam, c.req.param());
-    const { name } = await parseJsonBody(c, passkeyRenameBody);
-    return c.json(await webauthn.rename(c.get("user").id, id, name));
-  });
+  @Patch("/credentials/:id")
+  async rename(c: Ctx) {
+    const { id } = c.safeParam(credentialIdParam);
+    const { name } = await c.safeBody(passkeyRenameBody);
+    return c.json(await this.webauthn.rename(c.get("user").id, id, name));
+  }
 
-  app.delete("/auth/webauthn/credentials/:id", bearer, async (c) => {
-    const { id } = parse(credentialIdParam, c.req.param());
-    await webauthn.remove(c.get("user").id, id);
+  @Delete("/credentials/:id")
+  async remove(c: Ctx) {
+    const { id } = c.safeParam(credentialIdParam);
+    await this.webauthn.remove(c.get("user").id, id);
     return c.body(null, 204);
-  });
+  }
 }

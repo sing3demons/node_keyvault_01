@@ -10,39 +10,41 @@
 //   master/    the master account (bootstrap admin of clients) and its sign-in
 //   password/  forgot password (emailed code / link -> new password), change password (signed in)
 
-import type { Kp, MiddlewareHandler } from "../common/kp/index.js";
+import type { Kp } from "../common/kp/index.js";
 import type { AppConfig } from "../config.js";
 import { Argon2idHasher, SecretHasher } from "../shared/hashing.js";
 import { createMailer } from "../shared/mail.js";
-import { requireAuth, requireRoleOrMaster } from "../shared/middleware.js";
-import { registerAccountRoutes } from "./accounts/routes.js";
+import { Bearer, ClientAdmin } from "../shared/middleware.js";
+import { AccountController, UserAdminController } from "./accounts/controller.js";
 import { AccountService } from "./accounts/service.js";
 import { ClientService } from "./clients/clients.js";
 import { ClientOwnerService } from "./clients/owners.js";
-import { registerClientRoutes } from "./clients/routes.js";
+import { ClientController, ClientOwnerController } from "./clients/controller.js";
 import { DeviceService } from "./devices/devices.js";
-import { registerDeviceRoutes } from "./devices/routes.js";
+import { DeviceController } from "./devices/controller.js";
 import { EmailCodeService } from "./email/email-codes.js";
 import { RequestContext } from "./http.js";
 import { MasterAccountStore, type SyncResult } from "./master/account.js";
 import { MasterAuthService } from "./master/auth.js";
-import { registerMasterRoutes } from "./master/routes.js";
+import { MasterController } from "./master/controller.js";
 import type { IdTokenIssuer } from "./oauth/oidc.js";
-import { registerOAuthRoutes } from "./oauth/routes.js";
+import { DiscoveryController, OAuthController } from "./oauth/controller.js";
 import { OAuthService, SUPPORTED_SCOPES } from "./oauth/service.js";
 import type { AuthRepository } from "./repository.js";
-import { registerPasswordRoutes } from "./password/routes.js";
+import { PasswordController } from "./password/controller.js";
 import { PasswordService } from "./password/service.js";
-import { registerSignInRoutes } from "./sign-in/routes.js";
+import { SignInController } from "./sign-in/controller.js";
 import { SignInService } from "./sign-in/service.js";
-import { registerPasskeyRoutes } from "./webauthn/routes.js";
+import { PasskeyController } from "./webauthn/controller.js";
 import { WebAuthnService } from "./webauthn/webauthn.js";
 
 export interface AuthModule {
   /** Resolves Bearer tokens (for any module's protected routes). */
   oauth: OAuthService;
-  /** requireAuth middleware: a user's access token. */
-  bearer: MiddlewareHandler;
+  /**
+   * Provides the Bearer and ClientAdmin interceptors (so other modules' controllers can use
+   * `@UseInterceptors(Bearer)` too), then registers the auth controllers.
+   */
   registerRoutes(app: Kp): void;
 }
 
@@ -99,22 +101,26 @@ export async function createAuthModule(config: AppConfig, repo: AuthRepository, 
   const masterAuth = new MasterAuthService(repo, emailCodes, owners, masterAccounts, config.masterEmailVerification);
   const webauthn = new WebAuthnService(repo, config.webauthn);
 
-  const ctx = new RequestContext(config.webauthn.origins, config.trustProxy);
-  const bearer = requireAuth(oauth);
-  const clientAdmin = requireRoleOrMaster(oauth, "client_admin", (token) => masterAuth.session(token));
+  const http = new RequestContext(config.webauthn.origins, config.trustProxy);
 
   return {
     oauth,
-    bearer,
     registerRoutes(app) {
-      registerOAuthRoutes(app, { oauth, idTokens, bearer });
-      registerSignInRoutes(app, { signIn, oauth, webauthn, ctx, bearer });
-      registerPasswordRoutes(app, { passwords, ctx, bearer });
-      registerAccountRoutes(app, { accounts, bearer });
-      registerDeviceRoutes(app, { devices, bearer });
-      registerPasskeyRoutes(app, { webauthn, bearer });
-      registerMasterRoutes(app, { masterAuth, ctx });
-      registerClientRoutes(app, { clients, owners, clientAdmin });
+      app.provide(Bearer, new Bearer(oauth));
+      app.provide(ClientAdmin, new ClientAdmin(oauth, (token) => masterAuth.session(token)));
+      app.register(
+        new DiscoveryController(idTokens),
+        new OAuthController(oauth),
+        new SignInController(signIn, oauth, webauthn, http),
+        new PasswordController(passwords, http),
+        new AccountController(accounts),
+        new UserAdminController(accounts),
+        new DeviceController(devices),
+        new PasskeyController(webauthn),
+        new MasterController(masterAuth, http),
+        new ClientController(clients),
+        new ClientOwnerController(owners)
+      );
     }
   };
 }

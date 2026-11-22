@@ -1,29 +1,40 @@
 // /.well-known/* and /oauth/*: the OAuth 2.0 / OpenID Connect endpoints.
 
-import type { Context, Kp, MiddlewareHandler } from "../../common/kp/index.js";
-import { parse } from "../../shared/http.js";
+import { Controller, Get, Post, UseInterceptors, type Ctx } from "../../common/kp/index.js";
+import { Bearer } from "../../shared/middleware.js";
 import type { ClientCredentials } from "../clients/clients.js";
 import { authorizeQuery, introspectBody, parseTokenRequest, revokeBody } from "../schemas.js";
 import type { IdTokenIssuer } from "./oidc.js";
 import { OAuthError } from "./protocol.js";
 import { API_SCOPES, type OAuthService } from "./service.js";
 
-export function registerOAuthRoutes(
-  app: Kp,
-  { oauth, idTokens, bearer }: { oauth: OAuthService; idTokens: IdTokenIssuer; bearer: MiddlewareHandler }
-) {
-  // --- OpenID Connect discovery
-  app.get("/.well-known/openid-configuration", (c) => c.json(idTokens.discovery(API_SCOPES)));
-  // public keys for verifying ID Tokens
-  app.get("/.well-known/jwks.json", (c) => {
+/** OpenID Connect discovery. */
+@Controller("/.well-known")
+export class DiscoveryController {
+  constructor(private readonly idTokens: IdTokenIssuer) {}
+
+  @Get("/openid-configuration")
+  configuration(c: Ctx) {
+    return c.json(this.idTokens.discovery(API_SCOPES));
+  }
+
+  /** Public keys for verifying ID Tokens. */
+  @Get("/jwks.json")
+  jwks(c: Ctx) {
     c.header("Cache-Control", "public, max-age=300");
-    return c.json(idTokens.jwks());
-  });
+    return c.json(this.idTokens.jwks());
+  }
+}
+
+@Controller("/oauth")
+export class OAuthController {
+  constructor(private readonly oauth: OAuthService) {}
 
   /** Validate and hand off to the SPA login page. */
-  app.get("/oauth/authorize", async (c) => {
-    const q = parse(authorizeQuery, c.req.query());
-    const result = await oauth.createAuthRequest({
+  @Get("/authorize")
+  async authorize(c: Ctx) {
+    const q = c.safeQuery(authorizeQuery);
+    const result = await this.oauth.createAuthRequest({
       responseType: q.response_type,
       clientId: q.client_id,
       redirectUri: q.redirect_uri,
@@ -35,10 +46,11 @@ export function registerOAuthRoutes(
     });
     if ("redirect" in result) return c.redirect(result.redirect, 302);
     return c.redirect(`/login?request_id=${encodeURIComponent(result.requestId)}`, 302);
-  });
+  }
 
   /** application/x-www-form-urlencoded (RFC 6749 §4.1.3, §4.4.2, §6). */
-  app.post("/oauth/token", async (c) => {
+  @Post("/token")
+  async token(c: Ctx) {
     c.header("Cache-Control", "no-store");
     c.header("Pragma", "no-cache");
     // OAuthError is an HttpError, so app.onError renders the RFC 6749 §5.2 body (headers above are kept)
@@ -47,47 +59,51 @@ export function registerOAuthRoutes(
     const tokens = await withClientChallenge(c, client, () => {
       switch (req.grant_type) {
         case "authorization_code":
-          return oauth.exchangeCode({ code: req.code, redirectUri: req.redirect_uri, client, codeVerifier: req.code_verifier });
+          return this.oauth.exchangeCode({ code: req.code, redirectUri: req.redirect_uri, client, codeVerifier: req.code_verifier });
         case "refresh_token":
-          return oauth.refresh({ refreshToken: req.refresh_token, client, scope: req.scope });
+          return this.oauth.refresh({ refreshToken: req.refresh_token, client, scope: req.scope });
         case "client_credentials":
-          return oauth.clientCredentials({ client, scope: req.scope });
+          return this.oauth.clientCredentials({ client, scope: req.scope });
       }
     });
     return c.json(tokens);
-  });
+  }
 
   /** RFC 7009: the client authenticates (401 if it fails); otherwise always 200, even for unknown tokens. */
-  app.post("/oauth/revoke", async (c) => {
+  @Post("/revoke")
+  async revoke(c: Ctx) {
     const form = await c.req.parseBody().catch(() => ({}));
     const body = revokeBody.safeParse(form);
     const data = body.success ? body.data : {};
     const client = clientCredentials(c, data);
-    await withClientChallenge(c, client, () => oauth.revoke(data.token, client));
+    await withClientChallenge(c, client, () => this.oauth.revoke(data.token, client));
     return c.body(null, 200);
-  });
+  }
 
   /** RFC 7662, for confidential clients (resource servers). */
-  app.post("/oauth/introspect", async (c) => {
+  @Post("/introspect")
+  async introspect(c: Ctx) {
     c.header("Cache-Control", "no-store");
     const form = await c.req.parseBody().catch(() => ({}));
     const body = introspectBody.safeParse(form);
     const data = body.success ? body.data : {};
     const client = clientCredentials(c, data);
-    return c.json(await withClientChallenge(c, client, () => oauth.introspect(data.token, client)));
-  });
+    return c.json(await withClientChallenge(c, client, () => this.oauth.introspect(data.token, client)));
+  }
 
-  app.get("/oauth/userinfo", bearer, async (c) => {
+  @Get("/userinfo")
+  @UseInterceptors(Bearer)
+  async userInfo(c: Ctx) {
     const user = c.get("user");
-    return c.json(await oauth.userInfo(user.id, user.scope));
-  });
+    return c.json(await this.oauth.userInfo(user.id, user.scope));
+  }
 }
 
 /**
  * Client authentication (RFC 6749 §2.3.1): HTTP Basic, or client_id + client_secret in the form, or a
  * public client's client_id alone. Using more than one method is an error.
  */
-function clientCredentials(c: Context, form: { client_id?: string; client_secret?: string }): ClientCredentials {
+function clientCredentials(c: Ctx, form: { client_id?: string; client_secret?: string }): ClientCredentials {
   const basic = /^Basic\s+([A-Za-z0-9+/=]+)$/i.exec(c.req.header("Authorization") ?? "");
   if (basic) {
     if (form.client_secret !== undefined) {
@@ -114,7 +130,7 @@ function clientCredentials(c: Context, form: { client_id?: string; client_secret
 }
 
 /** RFC 6749 §5.2: a failed Basic authentication answers 401 with a WWW-Authenticate challenge. */
-async function withClientChallenge<T>(c: Context, client: ClientCredentials, run: () => Promise<T>): Promise<T> {
+async function withClientChallenge<T>(c: Ctx, client: ClientCredentials, run: () => Promise<T>): Promise<T> {
   try {
     return await run();
   } catch (error) {

@@ -1,33 +1,44 @@
 // /auth/me (the signed-in user's account) and /admin/users (admins: roles).
 
-import type { Kp, MiddlewareHandler } from "../../common/kp/index.js";
-import { parse, parseJsonBody } from "../../shared/http.js";
-import { requireRole } from "../../shared/middleware.js";
+import { Controller, Get, Patch, Put, UseInterceptors, type Ctx } from "../../common/kp/index.js";
+import { Bearer, requireRole } from "../../shared/middleware.js";
 import { setRolesBody, updateAccountBody, usernameParam } from "../schemas.js";
 import type { AccountService } from "./service.js";
 
-export function registerAccountRoutes(
-  app: Kp,
-  { accounts, bearer }: { accounts: AccountService; bearer: MiddlewareHandler }
-) {
-  app.get("/auth/me", bearer, async (c) => c.json(await accounts.get(c.get("user").id)));
+@Controller("/auth/me")
+@UseInterceptors(Bearer)
+export class AccountController {
+  constructor(private readonly accounts: AccountService) {}
+
+  @Get("/")
+  async me(c: Ctx) {
+    return c.json(await this.accounts.get(c.get("user").id));
+  }
 
   /** email, profiles, preferredLang */
-  app.patch("/auth/me", bearer, async (c) => {
-    const body = await parseJsonBody(c, updateAccountBody);
-    return c.json(await accounts.update(c.get("user").id, body));
-  });
+  @Patch("/")
+  async update(c: Ctx) {
+    const body = await c.safeBody(updateAccountBody);
+    return c.json(await this.accounts.update(c.get("user").id, body));
+  }
+}
 
-  // --- administration (role "admin")
-  app.use("/admin/users", bearer, requireRole("admin"));
-  app.use("/admin/users/*", bearer, requireRole("admin"));
+/** Administration (role "admin"). */
+@Controller("/admin/users")
+@UseInterceptors(Bearer, requireRole("admin"))
+export class UserAdminController {
+  constructor(private readonly accounts: AccountService) {}
 
-  app.get("/admin/users", async (c) => c.json({ users: await accounts.list() }));
+  @Get("/")
+  async list(c: Ctx) {
+    return c.json({ users: await this.accounts.list() });
+  }
 
   /** body: { roles } */
-  app.put("/admin/users/:username/roles", async (c) => {
-    const { username } = parse(usernameParam, c.req.param());
-    const { roles } = await parseJsonBody(c, setRolesBody);
-    return c.json(await accounts.setRoles(username, roles));
-  });
+  @Put("/:username/roles")
+  async setRoles(c: Ctx) {
+    const { username } = c.safeParam(usernameParam);
+    const { roles } = await c.safeBody(setRolesBody);
+    return c.json(await this.accounts.setRoles(username, roles));
+  }
 }

@@ -1,32 +1,36 @@
 // /auth/me/devices: browsers the signed-in user has signed in from.
 
-import type { Kp, MiddlewareHandler } from "../../common/kp/index.js";
-import { parse } from "../../shared/http.js";
+import { Controller, Delete, Get, Post, UseInterceptors, type Ctx } from "../../common/kp/index.js";
+import { Bearer } from "../../shared/middleware.js";
 import { credentialIdParam } from "../schemas.js";
 import type { DeviceService } from "./devices.js";
 
-export function registerDeviceRoutes(
-  app: Kp,
-  { devices, bearer }: { devices: DeviceService; bearer: MiddlewareHandler }
-) {
-  app.get("/auth/me/devices", bearer, async (c) => {
+@Controller("/auth/me/devices")
+@UseInterceptors(Bearer)
+export class DeviceController {
+  constructor(private readonly devices: DeviceService) {}
+
+  @Get("/")
+  async list(c: Ctx) {
     const user = c.get("user");
-    return c.json({ devices: await devices.list(user.id, user.deviceId) });
-  });
+    return c.json({ devices: await this.devices.list(user.id, user.deviceId) });
+  }
 
   /** Revoke the device's sessions, keep it in the history. */
-  app.post("/auth/me/devices/:id/sign-out", bearer, async (c) => {
-    const { id } = parse(credentialIdParam, c.req.param());
+  @Post("/:id/sign-out")
+  async signOut(c: Ctx) {
+    const { id } = c.safeParam(credentialIdParam);
     const user = c.get("user");
-    await devices.signOut(user.id, id, user.deviceId);
+    await this.devices.signOut(user.id, id, user.deviceId);
     return c.body(null, 204);
-  });
+  }
 
   /** Sign the device out and forget it. */
-  app.delete("/auth/me/devices/:id", bearer, async (c) => {
-    const { id } = parse(credentialIdParam, c.req.param());
+  @Delete("/:id")
+  async remove(c: Ctx) {
+    const { id } = c.safeParam(credentialIdParam);
     const user = c.get("user");
-    await devices.remove(user.id, id, user.deviceId);
+    await this.devices.remove(user.id, id, user.deviceId);
     return c.body(null, 204);
-  });
+  }
 }

@@ -1,10 +1,10 @@
-// HTTP boundary helpers: one error format for every endpoint, and request parsing with zod.
+// HTTP boundary helpers: one error format for every endpoint (request validation: c.safeBody / c.safeParam / ...).
 //
 // Every error response uses the OAuth 2.0 shape (RFC 6749 §5.2):
 //   { "error": "<code>", "error_description": "<human readable>" }
 
 import type { z } from "zod";
-import { formatIssues, ValidationError, type Context, type ErrorHandler, type NotFoundHandler } from "../common/kp/index.js";
+import { formatIssues, ValidationError, type ErrorHandler, type NotFoundHandler } from "../common/kp/index.js";
 import { errorMessage } from "./util.js";
 
 export interface ErrorBody {
@@ -68,18 +68,3 @@ export const notFoundHandler: NotFoundHandler = (c) =>
 
 export const formatZodError = (error: z.ZodError): string =>
   error.issues.map((i) => (i.path.length ? `${i.path.join(".")}: ${i.message}` : i.message)).join("; ");
-
-/** Validates input against a schema; failures become 400 with a readable message. */
-export function parse<S extends z.ZodType>(schema: S, input: unknown): z.output<S> {
-  const result = schema.safeParse(input);
-  if (!result.success) throw new HttpError(400, formatZodError(result.error));
-  return result.data;
-}
-
-/** Reads the JSON body and validates it. */
-export async function parseJsonBody<S extends z.ZodType>(c: Context, schema: S): Promise<z.output<S>> {
-  const body: unknown = await c.req.json().catch(() => {
-    throw new HttpError(400, "Request body must be valid JSON");
-  });
-  return parse(schema, body);
-}

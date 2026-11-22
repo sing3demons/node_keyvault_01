@@ -11,7 +11,6 @@ import { createSecretAclRepository } from "./keyvault/repositories/index.js";
 import { KeyVaultService } from "./keyvault/service.js";
 import { AzureKeyVaultSecretStore, NamedSecret } from "./keyvault/store.js";
 import { errorHandler, notFoundHandler } from "./shared/http.js";
-import { Bearer } from "./shared/middleware.js";
 
 async function main() {
   // --- storage
@@ -46,8 +45,7 @@ async function main() {
 
   // public: says which secret store backs the API (shown in the UI header), nothing more
   app.get("/health", (c) => c.json({ status: "ok", provider: "Azure Key Vault" }));
-  auth.registerRoutes(app);
-  app.provide(Bearer, new Bearer(auth.oauth)); // for @UseInterceptors(Bearer)
+  auth.registerRoutes(app); // also provides the Bearer interceptor the secrets controller uses
   app.register(secrets);
 
   // React UI (built by `vite build` into dist/public); client-side routes (/login, /callback) fall back to index.html
