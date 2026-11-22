@@ -117,6 +117,13 @@ export interface Device {
   current: boolean;
 }
 
+export interface Passkey {
+  id: string;
+  name: string;
+  createdAt: string;
+  lastUsedAt?: string;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await authFetch(path, {
     ...init,
@@ -234,6 +241,10 @@ export const api = {
   signOutDevice: (id: string) =>
     request<null>(`/auth/me/devices/${encodeURIComponent(id)}/sign-out`, { method: "POST" }),
   removeDevice: (id: string) => request<null>(`/auth/me/devices/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  passkeys: async () => (await request<{ passkeys: Passkey[] }>("/auth/webauthn/credentials")).passkeys,
+  renamePasskey: (id: string, name: string) =>
+    request<Passkey>(`/auth/webauthn/credentials/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify({ name }) }),
+  removePasskey: (id: string) => request<null>(`/auth/webauthn/credentials/${encodeURIComponent(id)}`, { method: "DELETE" }),
   list: async () => (await request<{ secrets: SecretSummary[] }>("/secrets")).secrets,
   get: async (name: string) => (await request<{ value: string }>(path(name))).value,
   set: (name: string, value: string) => request<unknown>(path(name), { method: "PUT", body: JSON.stringify({ value }) }),

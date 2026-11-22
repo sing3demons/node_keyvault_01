@@ -146,6 +146,11 @@ export const passkeyRegisterVerifyBody = z.object({
   credential: attestationCredential
 });
 
+/** PATCH /auth/webauthn/credentials/:id */
+export const passkeyRenameBody = z.object({
+  name: z.string().trim().min(1).max(64)
+});
+
 export const credentialIdParam = z.object({
   id: nonEmpty
 });

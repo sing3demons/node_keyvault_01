@@ -3,7 +3,7 @@
 import type { Hono, MiddlewareHandler } from "hono";
 import { parse, parseJsonBody } from "../../shared/http.js";
 import type { AuthEnv } from "../../shared/middleware.js";
-import { credentialIdParam, passkeyRegisterVerifyBody } from "../schemas.js";
+import { credentialIdParam, passkeyRegisterVerifyBody, passkeyRenameBody } from "../schemas.js";
 import type { WebAuthnService } from "./webauthn.js";
 
 export function registerPasskeyRoutes(
@@ -22,6 +22,12 @@ export function registerPasskeyRoutes(
   });
 
   app.get("/auth/webauthn/credentials", bearer, async (c) => c.json({ passkeys: await webauthn.list(c.get("user").id) }));
+
+  app.patch("/auth/webauthn/credentials/:id", bearer, async (c) => {
+    const { id } = parse(credentialIdParam, c.req.param());
+    const { name } = await parseJsonBody(c, passkeyRenameBody);
+    return c.json(await webauthn.rename(c.get("user").id, id, name));
+  });
 
   app.delete("/auth/webauthn/credentials/:id", bearer, async (c) => {
     const { id } = parse(credentialIdParam, c.req.param());

@@ -184,6 +184,14 @@ export class MongoUserRepository implements UserRepository {
     );
   }
 
+  async renameWebAuthn(userId: string, credentialId: string, name: string): Promise<boolean> {
+    const res = await this.users$.updateOne(
+      { _id: byId(userId), credentials: { $elemMatch: { id: credentialId, type: "webauthn" } } },
+      { $set: { "credentials.$.webauthn.name": name } }
+    );
+    return res.matchedCount > 0;
+  }
+
   async removeCredential(userId: string, credentialId: string): Promise<"removed" | "not_found" | "last_credential"> {
     // single atomic update: only pull when at least 2 credentials exist
     const res = await this.users$.updateOne(

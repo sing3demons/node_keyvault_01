@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { api, type Account, type SecretSummary } from "./api";
-import { addPasskey, getIdentity, logout, onIdentityChange, passkeysSupported, refresh, startLogin } from "./auth";
+import { getIdentity, logout, onIdentityChange, refresh, startLogin } from "./auth";
 import {
   AccountDialog,
   DeleteDialog,
   ClientsDialog,
   DevicesDialog,
   EditDialog,
+  PasskeysDialog,
   SecretRow,
   ShareDialog,
   Toasts,
@@ -29,6 +30,7 @@ export function App() {
   const [transferring, setTransferring] = useState<SecretSummary | null>(null);
   const [usersOpen, setUsersOpen] = useState(false);
   const [devicesOpen, setDevicesOpen] = useState(false);
+  const [passkeysOpen, setPasskeysOpen] = useState(false);
   const [clientsOpen, setClientsOpen] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [account, setAccount] = useState<Account | null>(null);
@@ -90,16 +92,6 @@ export function App() {
 
   const openCreate = () => setEditor({ open: true, name: null });
 
-  const onAddPasskey = async () => {
-    try {
-      await addPasskey(navigator.platform ? `Passkey · ${navigator.platform}` : undefined);
-      toast("Passkey added — you can now sign in with it");
-    } catch (e) {
-      const err = e as Error;
-      if (err.name !== "NotAllowedError") toast(err.message, true);
-    }
-  };
-
   const onLogout = async () => {
     await logout();
     startLogin();
@@ -145,11 +137,9 @@ export function App() {
           <button className="btn-ghost" onClick={() => setDevicesOpen(true)} title="Devices that signed in to your account">
             💻 <span className="label-text">Devices</span>
           </button>
-          {passkeysSupported() && (
-            <button className="btn-ghost" onClick={onAddPasskey} title="Register a passkey for this account">
-              🔑 <span className="label-text">Add passkey</span>
-            </button>
-          )}
+          <button className="btn-ghost" onClick={() => setPasskeysOpen(true)} title="Add, rename or remove your passkeys">
+            🔑 <span className="label-text">Passkeys</span>
+          </button>
           <button className="btn-ghost" onClick={onLogout}>
             Log out
           </button>
@@ -251,6 +241,8 @@ export function App() {
       <UsersDialog open={usersOpen} currentUserId={account?.id} onClose={() => setUsersOpen(false)} />
 
       <DevicesDialog open={devicesOpen} onClose={() => setDevicesOpen(false)} />
+
+      <PasskeysDialog open={passkeysOpen} onClose={() => setPasskeysOpen(false)} />
 
       <ClientsDialog open={clientsOpen} onClose={() => setClientsOpen(false)} />
 

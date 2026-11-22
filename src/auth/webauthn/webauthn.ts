@@ -187,6 +187,13 @@ export class WebAuthnService {
     }));
   }
 
+  async rename(userId: string, id: string, name: string) {
+    if (!(await this.repo.users.renameWebAuthn(userId, id, name))) throw new HttpError(404, "Passkey not found");
+    const passkey = (await this.list(userId)).find((p) => p.id === id);
+    if (!passkey) throw new HttpError(404, "Passkey not found");
+    return passkey;
+  }
+
   async remove(userId: string, id: string): Promise<void> {
     // only passkeys can be removed through this endpoint
     if (!(await this.passkeysOf(userId)).some((c) => c.id === id)) {

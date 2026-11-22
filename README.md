@@ -173,7 +173,7 @@ type Credential =
 
 Flow: UI → `GET /oauth/authorize` → redirect ไป `/login?request_id=…` → login ด้วย password หรือ passkey → redirect กลับ `/callback?code=…` → UI แลก code ที่ `POST /oauth/token` ด้วย `code_verifier`
 
-เพิ่ม passkey ได้จากปุ่ม "Add passkey" หลัง login (ทดสอบบน Chrome ได้ด้วย DevTools → More tools → WebAuthn → virtual authenticator)
+จัดการ passkey ได้จากปุ่ม "Passkeys" หลัง login: ดูรายการ (สร้างเมื่อไร / ใช้ล่าสุด), เพิ่ม, เปลี่ยนชื่อ, ลบ (ลบอันสุดท้ายที่ใช้ login ได้ไม่ได้) (ทดสอบบน Chrome ได้ด้วย DevTools → More tools → WebAuthn → virtual authenticator)
 
 ตั้งค่าใน `.env` (เฉพาะของทั้ง server): `MONGO_URL`, `MONGO_DB`, `WEBAUTHN_RP_ID`, `WEBAUTHN_ORIGINS`, `OIDC_ISSUER`, `SMTP_URL`, … (ดู `.env.example`) — ค่าของแต่ละแอปอยู่ที่ client
 — `WEBAUTHN_ORIGINS` ต้องตรงกับ origin ที่เปิดหน้า login จริง (dev: `:5173`, build: port ของ API)
@@ -203,7 +203,7 @@ suite อยู่ใน `test/e2e/*.test.mjs` (email code / link, clients, clie
 - `GET /auth/me` · `PATCH /auth/me` · `POST /auth/me/email/verification` (Bearer)
 - `GET /auth/me/devices` · `POST /auth/me/devices/:id/sign-out` · `DELETE /auth/me/devices/:id` (Bearer)
 - `POST /auth/webauthn/login/options` · `POST /auth/webauthn/login/verify`
-- `POST /auth/webauthn/register/options` · `POST /auth/webauthn/register/verify` · `GET/DELETE /auth/webauthn/credentials` (Bearer)
+- `POST /auth/webauthn/register/options` · `POST /auth/webauthn/register/verify` · `GET /auth/webauthn/credentials` · `PATCH/DELETE /auth/webauthn/credentials/:id` (Bearer; PATCH `{ name }` = เปลี่ยนชื่อ)
 
 Admin (ต้องมี role `admin`):
 

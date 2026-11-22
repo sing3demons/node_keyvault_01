@@ -158,6 +158,16 @@ export class DrizzleUserRepository implements UserRepository {
       .where(and(eq(userCredentials.id, credentialId), eq(userCredentials.userId, userId)));
   }
 
+  async renameWebAuthn(userId: string, credentialId: string, name: string): Promise<boolean> {
+    if (!isUuid(userId) || !isUuid(credentialId)) return false;
+    const updated = await this.db
+      .update(userCredentials)
+      .set({ name })
+      .where(and(eq(userCredentials.id, credentialId), eq(userCredentials.userId, userId), eq(userCredentials.type, "webauthn")))
+      .returning({ id: userCredentials.id });
+    return updated.length > 0;
+  }
+
   async removeCredential(userId: string, credentialId: string): Promise<"removed" | "not_found" | "last_credential"> {
     if (!isUuid(userId) || !isUuid(credentialId)) return "not_found";
     return this.db.transaction(async (tx) => {

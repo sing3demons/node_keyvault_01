@@ -13,12 +13,13 @@ import {
   type Grant,
   type OAuthClient,
   type OAuthClientInput,
+  type Passkey,
   type Permission,
   SCOPES,
   type SecretSummary,
   type SignInMethod
 } from "./api";
-import { confirmEmailCode, emailChallengeStatus, resendEmailCode, type PendingVerification } from "./auth";
+import { addPasskey, confirmEmailCode, emailChallengeStatus, passkeysSupported, resendEmailCode, type PendingVerification } from "./auth";
 import { CopyIcon, EditIcon, EyeIcon, EyeOffIcon, LockIcon, ShareIcon, TransferIcon, TrashIcon } from "./icons";
 
 const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });
@@ -1015,6 +1016,158 @@ function DevicesPanel({ onClose }: { onClose: () => void }) {
               </div>
             ))}
           </div>
+        )}
+        <div className="error-text">{error}</div>
+      </div>
+      <div className="dlg-foot">
+        <button type="button" className="btn-ghost" onClick={onClose}>
+          Done
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ---------- passkeys of the signed-in user ---------- */
+
+export function PasskeysDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
+  return (
+    <Modal open={open} onClose={onClose}>
+      {open && <PasskeysPanel onClose={onClose} />}
+    </Modal>
+  );
+}
+
+const defaultPasskeyName = () => (navigator.platform ? `Passkey · ${navigator.platform}` : "Passkey");
+
+function PasskeysPanel({ onClose }: { onClose: () => void }) {
+  const [passkeys, setPasskeys] = useState<Passkey[] | null>(null);
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [editing, setEditing] = useState<{ id: string; name: string } | null>(null);
+  const [newName, setNewName] = useState(defaultPasskeyName);
+
+  const load = () =>
+    api
+      .passkeys()
+      .then(setPasskeys)
+      .catch((e: Error) => setError(e.message));
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const run = async (key: string, action: () => Promise<unknown>) => {
+    setBusy(key);
+    setError("");
+    try {
+      await action();
+      await load();
+      return true;
+    } catch (e) {
+      const err = e as Error;
+      if (err.name !== "NotAllowedError") setError(err.message); // NotAllowedError: the user cancelled the browser prompt
+      return false;
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const add = async (e: FormEvent) => {
+    e.preventDefault();
+    if (await run("add", () => addPasskey(newName.trim() || undefined))) setNewName(defaultPasskeyName());
+  };
+
+  const saveName = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!editing) return;
+    const name = editing.name.trim();
+    if (!name) return setError("Name cannot be empty");
+    if (await run(editing.id, () => api.renamePasskey(editing.id, name))) setEditing(null);
+  };
+
+  const remove = (p: Passkey) => {
+    if (!confirm(`Remove passkey “${p.name}”? You will no longer be able to sign in with it.`)) return;
+    run(p.id, () => api.removePasskey(p.id));
+  };
+
+  return (
+    <div>
+      <div className="dlg-body">
+        <h2>Passkeys</h2>
+        <p className="hint">
+          Sign in with your fingerprint, face or device PIN instead of a password. Removing one here does not delete it from
+          your device or password manager — do that there too.
+        </p>
+        {passkeys === null ? (
+          <div className="skeleton" />
+        ) : passkeys.length === 0 ? (
+          <p className="hint">No passkeys yet.</p>
+        ) : (
+          <div className="device-list">
+            {passkeys.map((p) =>
+              editing?.id === p.id ? (
+                <form className="device-row" key={p.id} onSubmit={saveName}>
+                  <input
+                    className="device-main"
+                    autoFocus
+                    maxLength={64}
+                    value={editing.name}
+                    onChange={(e) => setEditing({ id: p.id, name: e.target.value })}
+                    onKeyDown={(e) => e.key === "Escape" && (e.preventDefault(), setEditing(null))}
+                    aria-label="Passkey name"
+                  />
+                  <div className="device-actions">
+                    <button type="submit" disabled={busy !== null}>
+                      Save
+                    </button>
+                    <button type="button" className="btn-ghost" disabled={busy !== null} onClick={() => setEditing(null)}>
+                      Cancel
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <div className="device-row" key={p.id}>
+                  <div className="device-main">
+                    <strong>{p.name}</strong>
+                    <div className="hint">
+                      Added {new Date(p.createdAt).toLocaleString()} ·{" "}
+                      {p.lastUsedAt ? `last used ${timeAgo(p.lastUsedAt)}` : "never used"}
+                    </div>
+                  </div>
+                  <div className="device-actions">
+                    <button
+                      className="btn-ghost"
+                      disabled={busy !== null}
+                      onClick={() => setEditing({ id: p.id, name: p.name })}
+                      title="Rename"
+                    >
+                      <EditIcon />
+                    </button>
+                    <button className="btn-ghost" disabled={busy !== null} onClick={() => remove(p)} title="Remove">
+                      <TrashIcon />
+                    </button>
+                  </div>
+                </div>
+              )
+            )}
+          </div>
+        )}
+        {passkeysSupported() ? (
+          <form className="grant-row add" onSubmit={add}>
+            <input
+              value={newName}
+              maxLength={64}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="Name for the new passkey"
+              aria-label="New passkey name"
+            />
+            <button type="submit" disabled={busy !== null}>
+              {busy === "add" ? "Waiting for device…" : "Add passkey"}
+            </button>
+          </form>
+        ) : (
+          <p className="hint">This browser does not support passkeys.</p>
         )}
         <div className="error-text">{error}</div>
       </div>

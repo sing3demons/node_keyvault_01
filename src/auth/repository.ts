@@ -59,6 +59,8 @@ export interface UserRepository {
   /** Replace the hash of a secret credential (rehash / algorithm upgrade / secret change). */
   updateSecret(userId: string, credentialId: string, value: string, algorithm: HashAlgorithm): Promise<void>;
   recordWebAuthnUse(userId: string, credentialId: string, counter: number, usedAt: Date): Promise<void>;
+  /** Renames one of the user's passkeys. @returns false if the user has no passkey with this id */
+  renameWebAuthn(userId: string, credentialId: string, name: string): Promise<boolean>;
   /**
    * Removes a credential unless it is the user's last one.
    * @returns "removed" | "not_found" | "last_credential"

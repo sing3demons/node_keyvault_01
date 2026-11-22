@@ -63,7 +63,8 @@ const SUITES = {
   "master-link": { file: "master", MASTER_EMAIL_VERIFICATION: "link", MODE: "link" },
   owners: {},
   secrets: {},
-  "mail-from": {}
+  "mail-from": {},
+  passkeys: {}
 };
 
 // ------------------------------------------------------------------ args
