@@ -1,9 +1,7 @@
 // Per-request facts the auth routes need from the HTTP layer: which browser this is (device cookie, IP)
 // and which auth UI origin emailed links should open.
 
-import type { Context } from "hono";
-import { getConnInfo } from "@hono/node-server/conninfo";
-import { getCookie, setCookie } from "hono/cookie";
+import { getConnInfo, getCookie, setCookie, type Context } from "../common/kp/index.js";
 import { randomToken } from "../shared/crypto.js";
 import type { DeviceContext } from "./devices/devices.js";
 import type { MailContext } from "./email/email-codes.js";
@@ -47,11 +45,7 @@ export class RequestContext {
       const forwarded = c.req.header("x-forwarded-for")?.split(",")[0]?.trim();
       if (forwarded) return forwarded.slice(0, 64);
     }
-    try {
-      return getConnInfo(c).remote.address;
-    } catch {
-      return undefined; // not running on the Node server (e.g. tests)
-    }
+    return getConnInfo(c).remote.address; // undefined when not running on the Node server (e.g. tests)
   }
 }
 

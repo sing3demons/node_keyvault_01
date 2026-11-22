@@ -1,9 +1,7 @@
 // The login page's endpoints: register, password and passkey sign-in, and the emailed code / link step.
 
-import type { Hono, MiddlewareHandler } from "hono";
-import { deleteCookie, getCookie, setCookie } from "hono/cookie";
+import { deleteCookie, getCookie, setCookie, type Kp, type MiddlewareHandler } from "../../common/kp/index.js";
 import { parseJsonBody } from "../../shared/http.js";
-import type { AuthEnv } from "../../shared/middleware.js";
 import { isHttps, type RequestContext } from "../http.js";
 import type { OAuthService } from "../oauth/service.js";
 import {
@@ -26,13 +24,13 @@ const EMAIL_LINK_COOKIE = "kv_email_link";
 const EMAIL_LINK_FLAG_COOKIE = "kv_email_link_pending";
 
 export function registerSignInRoutes(
-  app: Hono<AuthEnv>,
+  app: Kp,
   deps: {
     signIn: SignInService;
     oauth: OAuthService;
     webauthn: WebAuthnService;
     ctx: RequestContext;
-    bearer: MiddlewareHandler<AuthEnv>;
+    bearer: MiddlewareHandler;
   }
 ) {
   const { signIn, oauth, webauthn, ctx, bearer } = deps;

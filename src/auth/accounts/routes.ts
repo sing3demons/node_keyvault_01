@@ -1,14 +1,14 @@
 // /auth/me (the signed-in user's account) and /admin/users (admins: roles).
 
-import type { Hono, MiddlewareHandler } from "hono";
+import type { Kp, MiddlewareHandler } from "../../common/kp/index.js";
 import { parse, parseJsonBody } from "../../shared/http.js";
-import { requireRole, type AuthEnv } from "../../shared/middleware.js";
+import { requireRole } from "../../shared/middleware.js";
 import { setRolesBody, updateAccountBody, usernameParam } from "../schemas.js";
 import type { AccountService } from "./service.js";
 
 export function registerAccountRoutes(
-  app: Hono<AuthEnv>,
-  { accounts, bearer }: { accounts: AccountService; bearer: MiddlewareHandler<AuthEnv> }
+  app: Kp,
+  { accounts, bearer }: { accounts: AccountService; bearer: MiddlewareHandler }
 ) {
   app.get("/auth/me", bearer, async (c) => c.json(await accounts.get(c.get("user").id)));
 

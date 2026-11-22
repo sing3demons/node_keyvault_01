@@ -1,15 +1,14 @@
 // /auth/password/*: forgot password (no sign-in needed) · /auth/me/password: change it while signed in.
 
-import type { Hono, MiddlewareHandler } from "hono";
+import type { Kp, MiddlewareHandler } from "../../common/kp/index.js";
 import { parseJsonBody } from "../../shared/http.js";
-import type { AuthEnv } from "../../shared/middleware.js";
 import type { RequestContext } from "../http.js";
 import { changePasswordBody, forgotPasswordBody, resetPasswordBody } from "../schemas.js";
 import type { PasswordService } from "./service.js";
 
 export function registerPasswordRoutes(
-  app: Hono<AuthEnv>,
-  { passwords, ctx, bearer }: { passwords: PasswordService; ctx: RequestContext; bearer: MiddlewareHandler<AuthEnv> }
+  app: Kp,
+  { passwords, ctx, bearer }: { passwords: PasswordService; ctx: RequestContext; bearer: MiddlewareHandler }
 ) {
   /** { identifier, request_id? } -> pending code / link. Same answer whether or not the account exists. */
   app.post("/auth/password/forgot", async (c) => {

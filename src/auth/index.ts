@@ -10,11 +10,11 @@
 //   master/    the master account (bootstrap admin of clients) and its sign-in
 //   password/  forgot password (emailed code / link -> new password), change password (signed in)
 
-import type { Hono, MiddlewareHandler } from "hono";
+import type { Kp, MiddlewareHandler } from "../common/kp/index.js";
 import type { AppConfig } from "../config.js";
 import { Argon2idHasher, SecretHasher } from "../shared/hashing.js";
 import { createMailer } from "../shared/mail.js";
-import { requireAuth, requireRoleOrMaster, type AuthEnv } from "../shared/middleware.js";
+import { requireAuth, requireRoleOrMaster } from "../shared/middleware.js";
 import { registerAccountRoutes } from "./accounts/routes.js";
 import { AccountService } from "./accounts/service.js";
 import { ClientService } from "./clients/clients.js";
@@ -42,8 +42,8 @@ export interface AuthModule {
   /** Resolves Bearer tokens (for any module's protected routes). */
   oauth: OAuthService;
   /** requireAuth middleware: a user's access token. */
-  bearer: MiddlewareHandler<AuthEnv>;
-  registerRoutes(app: Hono<AuthEnv>): void;
+  bearer: MiddlewareHandler;
+  registerRoutes(app: Kp): void;
 }
 
 const MASTER_SYNC_NOTE: Record<SyncResult, string> = {

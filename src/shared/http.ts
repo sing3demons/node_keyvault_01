@@ -3,9 +3,8 @@
 // Every error response uses the OAuth 2.0 shape (RFC 6749 §5.2):
 //   { "error": "<code>", "error_description": "<human readable>" }
 
-import type { Context, ErrorHandler, NotFoundHandler } from "hono";
-import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { z } from "zod";
+import { formatIssues, ValidationError, type Context, type ErrorHandler, type NotFoundHandler } from "../common/kp/index.js";
 import { errorMessage } from "./util.js";
 
 export interface ErrorBody {
@@ -32,7 +31,7 @@ export class HttpError extends Error {
   readonly error: string;
 
   constructor(
-    readonly statusCode: ContentfulStatusCode,
+    readonly statusCode: number,
     description: string,
     error?: string
   ) {
@@ -41,11 +40,17 @@ export class HttpError extends Error {
   }
 }
 
-const isErrorStatus = (value: unknown): value is ContentfulStatusCode =>
+const isErrorStatus = (value: unknown): value is number =>
   typeof value === "number" && value >= 400 && value < 600;
 
-/** app.onError: HttpError as-is; upstream 4xx (e.g. Azure RestError) keep their status; anything else is a 500. */
+/**
+ * app.onError: HttpError as-is; failed c.safeBody / c.safeParam / validator() are 400 invalid_request;
+ * upstream 4xx (e.g. Azure RestError) keep their status; anything else is a 500.
+ */
 export const errorHandler: ErrorHandler = (err, c) => {
+  if (err instanceof ValidationError) {
+    return c.json<ErrorBody>({ error: "invalid_request", error_description: formatIssues(err.issues) }, 400);
+  }
   if (err instanceof HttpError) {
     return c.json<ErrorBody>({ error: err.error, error_description: err.message }, err.statusCode);
   }

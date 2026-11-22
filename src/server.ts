@@ -1,8 +1,6 @@
 // Composition root: config -> storage -> modules -> routes -> HTTP server.
 
-import { serve } from "@hono/node-server";
-import { serveStatic } from "@hono/node-server/serve-static";
-import { Hono } from "hono";
+import { Kp, serve, serveStatic } from "./common/kp/index.js";
 import { createAuthModule } from "./auth/index.js";
 import { AuthUserDirectory } from "./auth/accounts/user-directory.js";
 import { IdTokenIssuer, SigningKeyRing } from "./auth/oauth/oidc.js";
@@ -10,11 +8,10 @@ import { createAuthRepository } from "./auth/repositories/index.js";
 import { config } from "./config.js";
 import { KeyVaultController } from "./keyvault/controller.js";
 import { createSecretAclRepository } from "./keyvault/repositories/index.js";
-import { registerSecretRoutes } from "./keyvault/routes.js";
 import { KeyVaultService } from "./keyvault/service.js";
 import { AzureKeyVaultSecretStore, NamedSecret } from "./keyvault/store.js";
 import { errorHandler, notFoundHandler } from "./shared/http.js";
-import type { AuthEnv } from "./shared/middleware.js";
+import { Bearer } from "./shared/middleware.js";
 
 async function main() {
   // --- storage
@@ -43,14 +40,15 @@ async function main() {
   );
 
   // --- routes
-  const app = new Hono<AuthEnv>();
+  const app = new Kp();
   app.onError(errorHandler);
   app.notFound(notFoundHandler);
 
   // public: says which secret store backs the API (shown in the UI header), nothing more
   app.get("/health", (c) => c.json({ status: "ok", provider: "Azure Key Vault" }));
   auth.registerRoutes(app);
-  registerSecretRoutes(app, { secrets, bearer: auth.bearer });
+  app.provide(Bearer, new Bearer(auth.oauth)); // for @UseInterceptors(Bearer)
+  app.register(secrets);
 
   // React UI (built by `vite build` into dist/public); client-side routes (/login, /callback) fall back to index.html
   app.use("/*", serveStatic({ root: "./dist/public" }));

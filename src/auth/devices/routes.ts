@@ -1,14 +1,13 @@
 // /auth/me/devices: browsers the signed-in user has signed in from.
 
-import type { Hono, MiddlewareHandler } from "hono";
+import type { Kp, MiddlewareHandler } from "../../common/kp/index.js";
 import { parse } from "../../shared/http.js";
-import type { AuthEnv } from "../../shared/middleware.js";
 import { credentialIdParam } from "../schemas.js";
 import type { DeviceService } from "./devices.js";
 
 export function registerDeviceRoutes(
-  app: Hono<AuthEnv>,
-  { devices, bearer }: { devices: DeviceService; bearer: MiddlewareHandler<AuthEnv> }
+  app: Kp,
+  { devices, bearer }: { devices: DeviceService; bearer: MiddlewareHandler }
 ) {
   app.get("/auth/me/devices", bearer, async (c) => {
     const user = c.get("user");

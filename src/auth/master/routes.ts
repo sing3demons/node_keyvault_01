@@ -1,13 +1,12 @@
 // /auth/master/*: master sign-in — password, then a code / link to the master's email, then a session token.
 
-import type { Hono } from "hono";
+import type { Kp } from "../../common/kp/index.js";
 import { parseJsonBody } from "../../shared/http.js";
-import type { AuthEnv } from "../../shared/middleware.js";
 import { bearerToken, type RequestContext } from "../http.js";
 import { masterCodeBody, masterLoginBody, masterStatusBody } from "../schemas.js";
 import type { MasterAuthService } from "./auth.js";
 
-export function registerMasterRoutes(app: Hono<AuthEnv>, { masterAuth, ctx }: { masterAuth: MasterAuthService; ctx: RequestContext }) {
+export function registerMasterRoutes(app: Kp, { masterAuth, ctx }: { masterAuth: MasterAuthService; ctx: RequestContext }) {
   /** { username, password } -> { verify } (code or link sent to the master's email) */
   app.post("/auth/master/login", async (c) => {
     const { username, password } = await parseJsonBody(c, masterLoginBody);

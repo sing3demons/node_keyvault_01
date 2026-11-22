@@ -1,16 +1,15 @@
 // /admin/clients (RFC 7591 metadata, RFC 7592-style read / update / delete) and /admin/client-owners.
 // Callers: a client_admin user's Bearer token, or a master session (until the master is disabled).
 
-import type { Context, Hono, MiddlewareHandler } from "hono";
+import type { Context, Kp, MiddlewareHandler } from "../../common/kp/index.js";
 import { parse, parseJsonBody } from "../../shared/http.js";
-import type { AuthEnv } from "../../shared/middleware.js";
 import { clientIdParam, clientMetadataBody, usernameParam } from "../schemas.js";
 import type { ClientService } from "./clients.js";
 import type { Actor, ClientOwnerService } from "./owners.js";
 
 export function registerClientRoutes(
-  app: Hono<AuthEnv>,
-  { clients, owners, clientAdmin }: { clients: ClientService; owners: ClientOwnerService; clientAdmin: MiddlewareHandler<AuthEnv> }
+  app: Kp,
+  { clients, owners, clientAdmin }: { clients: ClientService; owners: ClientOwnerService; clientAdmin: MiddlewareHandler }
 ) {
   for (const p of ["/admin/clients", "/admin/clients/*", "/admin/client-owners", "/admin/client-owners/*"]) app.use(p, clientAdmin);
 
@@ -65,7 +64,7 @@ export function registerClientRoutes(
   );
 }
 
-function actor(c: Context<AuthEnv>): Actor {
+function actor(c: Context): Actor {
   const master = c.get("master");
   if (master) return { kind: "master", name: master.username };
   const user = c.get("user");

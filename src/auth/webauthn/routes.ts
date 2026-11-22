@@ -1,14 +1,13 @@
 // /auth/webauthn/*: passkey management for the signed-in user (signing in with one: sign-in/routes.ts).
 
-import type { Hono, MiddlewareHandler } from "hono";
+import type { Kp, MiddlewareHandler } from "../../common/kp/index.js";
 import { parse, parseJsonBody } from "../../shared/http.js";
-import type { AuthEnv } from "../../shared/middleware.js";
 import { credentialIdParam, passkeyRegisterVerifyBody, passkeyRenameBody } from "../schemas.js";
 import type { WebAuthnService } from "./webauthn.js";
 
 export function registerPasskeyRoutes(
-  app: Hono<AuthEnv>,
-  { webauthn, bearer }: { webauthn: WebAuthnService; bearer: MiddlewareHandler<AuthEnv> }
+  app: Kp,
+  { webauthn, bearer }: { webauthn: WebAuthnService; bearer: MiddlewareHandler }
 ) {
   app.post("/auth/webauthn/register/options", bearer, async (c) => {
     const user = c.get("user");

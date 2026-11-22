@@ -1,7 +1,7 @@
 // Route middleware shared by every module. Depends only on the TokenAuthenticator contract,
 // so any module can protect its routes without importing the auth implementation.
 
-import type { MiddlewareHandler } from "hono";
+import type { Ctx, Interceptor, MiddlewareHandler, Next } from "../common/kp/index.js";
 import { HttpError } from "./http.js";
 
 /** The caller behind a valid access token. */
@@ -23,17 +23,17 @@ export interface TokenAuthenticator {
   authenticate(accessToken: string): Promise<AuthenticatedUser | null>;
 }
 
-/** Hono env for routes behind requireAuth: `c.get("user")` is the authenticated caller. */
-export type AuthEnv = {
-  Variables: {
+declare module "../common/kp/index.js" {
+  /** Set by the middleware below; on routes behind requireAuth `c.get("user")` is the authenticated caller. */
+  interface ContextVariableMap {
     user: AuthenticatedUser;
     /** Set (instead of `user`) when the request authenticated as the master credential. */
     master?: { username: string };
-  };
-};
+  }
+}
 
 /** Requires `Authorization: Bearer <access token>` (RFC 6750), optionally with a scope. */
-export function requireAuth(authenticator: TokenAuthenticator, scope?: string): MiddlewareHandler<AuthEnv> {
+export function requireAuth(authenticator: TokenAuthenticator, scope?: string): MiddlewareHandler {
   return async (c, next) => {
     const header = c.req.header("Authorization") ?? "";
     const match = /^Bearer\s+([A-Za-z0-9_-]+)$/i.exec(header);
@@ -52,8 +52,24 @@ export function requireAuth(authenticator: TokenAuthenticator, scope?: string): 
   };
 }
 
+/**
+ * requireAuth as an interceptor class, for controllers: `@UseInterceptors(Bearer)`.
+ * The app supplies the instance: `app.provide(Bearer, new Bearer(oauth))`.
+ */
+export class Bearer implements Interceptor {
+  readonly #check: MiddlewareHandler;
+
+  constructor(authenticator: TokenAuthenticator, scope?: string) {
+    this.#check = requireAuth(authenticator, scope);
+  }
+
+  intercept(c: Ctx, next: Next) {
+    return this.#check(c, next);
+  }
+}
+
 /** Use after requireAuth: only callers holding `role` get through (403 otherwise). */
-export function requireRole(role: string): MiddlewareHandler<AuthEnv> {
+export function requireRole(role: string): MiddlewareHandler {
   return async (c, next) => {
     if (!c.get("user").roles.includes(role)) {
       throw new HttpError(403, `Requires the "${role}" role`, "access_denied");
@@ -70,7 +86,7 @@ export function requireRoleOrMaster(
   authenticator: TokenAuthenticator,
   role: string,
   masterSession: (accessToken: string) => Promise<{ username: string } | null>
-): MiddlewareHandler<AuthEnv> {
+): MiddlewareHandler {
   const bearer = requireAuth(authenticator);
   const hasRole = requireRole(role);
   return async (c, next) => {

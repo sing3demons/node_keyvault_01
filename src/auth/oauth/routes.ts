@@ -1,8 +1,7 @@
 // /.well-known/* and /oauth/*: the OAuth 2.0 / OpenID Connect endpoints.
 
-import type { Context, Hono, MiddlewareHandler } from "hono";
+import type { Context, Kp, MiddlewareHandler } from "../../common/kp/index.js";
 import { parse } from "../../shared/http.js";
-import type { AuthEnv } from "../../shared/middleware.js";
 import type { ClientCredentials } from "../clients/clients.js";
 import { authorizeQuery, introspectBody, parseTokenRequest, revokeBody } from "../schemas.js";
 import type { IdTokenIssuer } from "./oidc.js";
@@ -10,8 +9,8 @@ import { OAuthError } from "./protocol.js";
 import { API_SCOPES, type OAuthService } from "./service.js";
 
 export function registerOAuthRoutes(
-  app: Hono<AuthEnv>,
-  { oauth, idTokens, bearer }: { oauth: OAuthService; idTokens: IdTokenIssuer; bearer: MiddlewareHandler<AuthEnv> }
+  app: Kp,
+  { oauth, idTokens, bearer }: { oauth: OAuthService; idTokens: IdTokenIssuer; bearer: MiddlewareHandler }
 ) {
   // --- OpenID Connect discovery
   app.get("/.well-known/openid-configuration", (c) => c.json(idTokens.discovery(API_SCOPES)));

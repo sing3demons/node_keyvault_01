@@ -1,6 +1,6 @@
 # node_keyvault
 
-API ([Hono](https://hono.dev)) + UI (React + Vite) สำหรับจัดการ secret (CRUD) โดยรองรับ 2 โหมด:
+API (framework ในตัว: [src/common/kp](src/common/kp/index.ts) — Hono-style + decorators) + UI (React + Vite) สำหรับจัดการ secret (CRUD) โดยรองรับ 2 โหมด:
 
 - `local` (ค่าเริ่มต้น): ใช้ Vault container ใน Docker สำหรับ local development
 - `azure`: ใช้ Azure Key Vault จริงผ่าน `@azure/identity` + `@azure/keyvault-secrets`
