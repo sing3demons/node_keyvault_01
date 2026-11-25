@@ -6,12 +6,18 @@ export interface SecretSummary {
     enabled: boolean;
     createdOn?: string;
     updatedOn?: string;
+    expiresOn?: string;
+}
+
+export interface SetSecretOptions {
+    /** undefined = no expiry. Note: every set creates a new version, so omitting this clears an existing expiry. */
+    expiresOn?: Date;
 }
 
 export interface ISecretStore {
     listSecrets(): Promise<SecretSummary[]>;
     getSecret(name: string): Promise<string>;
-    setSecret(name: string, value: string): Promise<void>;
+    setSecret(name: string, value: string, options?: SetSecretOptions): Promise<void>;
     deleteSecret(name: string): Promise<void>;
 }
 
@@ -30,7 +36,8 @@ export class AzureKeyVaultSecretStore implements ISecretStore {
                 name: props.name,
                 enabled: props.enabled ?? true,
                 createdOn: props.createdOn?.toISOString(),
-                updatedOn: props.updatedOn?.toISOString()
+                updatedOn: props.updatedOn?.toISOString(),
+                expiresOn: props.expiresOn?.toISOString()
             });
         }
         return secrets.sort((a, b) => a.name.localeCompare(b.name));
@@ -44,9 +51,9 @@ export class AzureKeyVaultSecretStore implements ISecretStore {
         return response.value;
     }
 
-    async setSecret(name: string, value: string): Promise<void> {
+    async setSecret(name: string, value: string, options: SetSecretOptions = {}): Promise<void> {
         try {
-            await this.client.setSecret(name, value);
+            await this.client.setSecret(name, value, { expiresOn: options.expiresOn });
         } catch (error) {
             // 409: name is held by a soft-deleted secret -> recover it, then write the new value
             if ((error as { statusCode?: number }).statusCode !== 409) {
@@ -54,7 +61,7 @@ export class AzureKeyVaultSecretStore implements ISecretStore {
             }
             const poller = await this.client.beginRecoverDeletedSecret(name);
             await poller.pollUntilDone();
-            await this.client.setSecret(name, value);
+            await this.client.setSecret(name, value, { expiresOn: options.expiresOn });
         }
     }
 

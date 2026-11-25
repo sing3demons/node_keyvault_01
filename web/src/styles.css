@@ -135,7 +135,8 @@ h1 {
   color: var(--muted);
 }
 input,
-textarea {
+textarea,
+select {
   width: 100%;
   font: inherit;
   color: var(--text);
@@ -147,7 +148,8 @@ textarea {
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 input:focus,
-textarea:focus {
+textarea:focus,
+select:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
 }
@@ -372,6 +374,56 @@ label {
   gap: 6px;
   font-size: 13px;
   font-weight: 600;
+}
+.badge.danger {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.date-field {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.date-field input {
+  flex: 1;
+  color-scheme: light dark; /* native calendar popup follows the theme */
+}
+.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+@media (max-width: 420px) {
+  .two-col {
+    grid-template-columns: 1fr;
+  }
+}
+.warn-text {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.kv {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 14px;
+  margin: 0;
+  font-size: 13px;
+}
+.kv dt {
+  color: var(--muted);
+}
+.kv dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+textarea.jwks {
+  min-height: 160px;
+  font-size: 11px;
 }
 .hint {
   font-weight: 400;

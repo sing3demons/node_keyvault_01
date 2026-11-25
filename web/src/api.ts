@@ -3,6 +3,20 @@ export interface SecretSummary {
   enabled: boolean;
   createdOn?: string;
   updatedOn?: string;
+  expiresOn?: string;
+}
+
+export interface GeneratedKeyPair {
+  kid: string;
+  privateSecretName: string;
+  publicSecretName: string;
+  expiresOn: string;
+  jwks: { keys: Record<string, unknown>[] };
+}
+
+export interface KeyPairOptions {
+  modulusLength: 2048 | 3072 | 4096;
+  validDays: number;
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -23,6 +37,10 @@ export const api = {
   health: () => request<{ status: string; provider: string }>("/health"),
   list: async () => (await request<{ secrets: SecretSummary[] }>("/secrets")).secrets,
   get: async (name: string) => (await request<{ value: string }>(path(name))).value,
-  set: (name: string, value: string) => request<null>(path(name), { method: "PUT", body: JSON.stringify({ value }) }),
-  remove: (name: string) => request<null>(path(name), { method: "DELETE" })
+  /** expiresOn: ISO string, or null for no expiry */
+  set: (name: string, value: string, expiresOn: string | null) =>
+    request<null>(path(name), { method: "PUT", body: JSON.stringify({ value, expiresOn }) }),
+  remove: (name: string) => request<null>(path(name), { method: "DELETE" }),
+  generateKeyPair: (name: string, options: KeyPairOptions) =>
+    request<GeneratedKeyPair>(`/keypairs/${encodeURIComponent(name)}`, { method: "POST", body: JSON.stringify(options) })
 };

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type SecretSummary } from "./api";
-import { DeleteDialog, EditDialog, SecretRow, Toasts, type Toast } from "./components";
-import { LockIcon, PlusIcon, RefreshIcon, SearchIcon } from "./icons";
+import { DeleteDialog, EditDialog, KeyPairDialog, SecretRow, Toasts, type Toast } from "./components";
+import { KeyIcon, LockIcon, PlusIcon, RefreshIcon, SearchIcon } from "./icons";
 
 type Health = { state: "loading" } | { state: "ok"; provider: string } | { state: "error" };
 
@@ -12,6 +12,7 @@ export function App() {
   const [health, setHealth] = useState<Health>({ state: "loading" });
   const [editor, setEditor] = useState<{ open: boolean; name: string | null }>({ open: false, name: null });
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [keyPairOpen, setKeyPairOpen] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -93,6 +94,10 @@ export function App() {
         <button className="btn-ghost" title="Refresh" onClick={load} disabled={loading}>
           <RefreshIcon />
         </button>
+        <button className="btn-ghost" title="Generate RSA key pair" onClick={() => setKeyPairOpen(true)}>
+          <KeyIcon />
+          <span className="label-text">Key pair</span>
+        </button>
         <button className="btn-primary" onClick={openCreate}>
           <PlusIcon />
           <span className="label-text">New secret</span>
@@ -146,6 +151,7 @@ export function App() {
       <EditDialog
         open={editor.open}
         editing={editor.name}
+        initialExpiresOn={secrets.find((s) => s.name === editor.name)?.expiresOn}
         existingNames={secrets.map((s) => s.name)}
         onClose={() => setEditor({ open: false, name: null })}
         onSaved={(name, created) => {
@@ -153,6 +159,17 @@ export function App() {
           toast(created ? `Created “${name}”` : `Updated “${name}”`);
           load();
         }}
+      />
+
+      <KeyPairDialog
+        open={keyPairOpen}
+        existingNames={secrets.map((s) => s.name)}
+        onClose={() => setKeyPairOpen(false)}
+        onGenerated={(r) => {
+          toast(`Generated key pair “${r.kid.slice(0, 8)}…”`);
+          load();
+        }}
+        onCopied={() => toast("Copied JWKS to clipboard")}
       />
 
       <DeleteDialog

@@ -41,6 +41,8 @@ async function main() {
 
   app.delete("/secrets/:name", keyVaultHandler.deleteSecret.bind(keyVaultHandler));
 
+  app.post("/keypairs/:name", keyVaultHandler.generateKeyPair.bind(keyVaultHandler));
+
   // React UI (built by `vite build` into dist/public)
   app.use("/*", serveStatic({ root: "./dist/public" }));
 
