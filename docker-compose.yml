@@ -1,7 +1,7 @@
 services:
   # Azure Key Vault emulator (https://github.com/nagyesta/lowkey-vault)
   keyvault:
-    image: nagyesta/lowkey-vault:7.3.145
+    image: nagyesta/lowkey-vault:7.3.145-ubi10-minimal
     container_name: keyvault-emulator
     environment:
       # Azure SDK requires the vault host to be a subdomain of the challenge resource:
@@ -26,6 +26,8 @@ services:
     env_file:
       - .env
     environment:
+      # app listens on 3002 inside the container (overrides PORT from .env)
+      PORT: "3002"
       SECRET_PROVIDER: azure
       AZURE_KEYVAULT_URL: https://primary.localhost:8443
       # DefaultAzureCredential -> ManagedIdentityCredential -> emulator token endpoint
@@ -34,7 +36,7 @@ services:
       # emulator uses a self-signed certificate (local dev only!)
       NODE_TLS_REJECT_UNAUTHORIZED: "0"
     ports:
-      - "${PORT:-3000}:${PORT:-3000}"
+      - "3002:3002"
     depends_on:
       keyvault:
         condition: service_healthy
